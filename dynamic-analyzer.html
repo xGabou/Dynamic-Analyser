@@ -1,0 +1,3680 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>DynamicAnalyzer</title>
+<script src="https://unpkg.com/acorn@8.11.3/dist/acorn.js"></script>
+<script src="https://unpkg.com/acorn-walk@8.3.2/dist/walk.js"></script>
+<style>
+  :root {
+    --bg: #0b1021;
+    --panel: #121931;
+    --accent: #7ce7ac;
+    --muted: #8fa1c2;
+    --text: #e8edff;
+    --danger: #ff8a9a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+    background: radial-gradient(circle at 20% 20%, #162044 0, #0b1021 45%),
+                radial-gradient(circle at 80% 0%, #1d2b52 0, #0b1021 35%),
+                var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+  header {
+    padding: 16px 18px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    backdrop-filter: blur(6px);
+    background: rgba(11, 16, 33, 0.75);
+    border-bottom: 1px solid #1f2b4d;
+  }
+	  header h1 {
+	    margin: 0;
+	    font-size: 18px;
+	    letter-spacing: 0.5px;
+	    color: var(--accent);
+	  }
+	  .pill { padding: 6px 10px; border-radius: 12px; background: #182344; color: var(--muted); font-size: 12px; }
+	  main { display: grid; grid-template-columns: minmax(280px, 320px) minmax(0, 1fr); gap: 16px; padding: 16px; flex: 1; }
+	  .panel {
+	    background: var(--panel);
+	    border: 1px solid #1f2b4d;
+	    border-radius: 12px;
+	    padding: 14px;
+	    box-shadow: 0 10px 40px rgba(0,0,0,0.35);
+	    min-width: 0;
+	  }
+  .panel h2 { margin: 0 0 10px; font-size: 15px; color: var(--accent); }
+  .panel p.desc { margin: 6px 0 12px; color: var(--muted); font-size: 13px; }
+  .upload { border: 1px dashed #2c3b68; padding: 12px; border-radius: 10px; background: rgba(255,255,255,0.02); }
+  input[type="file"] { width: 100%; color: var(--muted); }
+  .search-row { display: flex; gap: 8px; margin-top: 12px; }
+  .search-row input {
+    flex: 1; padding: 10px 12px; border-radius: 10px; border: 1px solid #2c3b68;
+    background: #0f1730; color: var(--text); font-size: 14px;
+  }
+  button {
+    padding: 10px 14px; border-radius: 10px; border: none;
+    background: linear-gradient(135deg, #5ce6b8, #4ea7ff);
+    color: #041026; font-weight: 600; cursor: pointer;
+  }
+  .results { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
+  .card {
+    border: 1px solid #223258; border-radius: 10px; padding: 12px;
+    background: rgba(255,255,255,0.02);
+  }
+  .card h3 { margin: 0 0 8px; font-size: 14px; color: var(--accent); }
+  .mono { font-family: "JetBrains Mono", "Fira Code", monospace; font-size: 12px; color: #d5ddff; }
+	  .chip { display: inline-block; padding: 3px 8px; border-radius: 8px; background: #1e294a; color: var(--muted); margin-right: 6px; margin-bottom: 4px; font-size: 12px; }
+	  .server { color: var(--danger); font-weight: 600; }
+	  .list { margin: 0; padding-left: 16px; }
+	  .mut { margin: 4px 0; }
+	  .mut strong { color: var(--accent); }
+	  .section-title { text-transform: uppercase; letter-spacing: 1px; font-size: 11px; color: var(--muted); margin: 10px 0 4px; }
+	  .empty { color: var(--muted); font-style: italic; }
+	  .if-cond { color: var(--danger); font-weight: 600; }
+	  .skipped { opacity: 0.6; }
+	  @media (max-width: 900px) {
+	    main { grid-template-columns: 1fr; }
+	  }
+	</style>
+</head>
+<body>
+<header>
+  <h1>DynamicAnalyzer</h1>
+  <span class="pill">Automatic call-chain & global mutation explorer</span>
+</header>
+<main>
+  <div class="panel">
+    <h2>Load Project</h2>
+    <p class="desc">Upload HTML, JS, and GS files. Then search by element id to trace event handlers and call chains.</p>
+  <div class="upload">
+      <input type="file" id="fileInput" multiple accept=".html,.htm,.js,.gs,.txt" />
+      <div style="margin:8px 0; color: var(--muted); font-size:12px; text-align:center;">or</div>
+      <input type="file" id="folderInput" webkitdirectory directory multiple />
+    </div>
+    <div class="search-row">
+      <input id="searchId" placeholder="Search element id (e.g. btnSave)" />
+      <button id="runBtn">Analyze</button>
+    </div>
+    <div id="htmlChooser" style="margin-top:10px;"></div>
+    <div style="margin-top:10px;font-size:12px;color:var(--muted);">
+      Tip: Inline onclick and addEventListener handlers are detected automatically. Call chains and google.script.run entry points are expanded recursively.
+    </div>
+  </div>
+	  <div class="panel">
+	    <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;">
+	      <button id="viewPathsBtn">Path Explorer</button>
+	      <button id="viewResultsBtn">Results</button>
+	      <button id="viewDrillBtn">Chain Sequence</button>
+	      <button id="viewOrderedDrillBtn">Drilldown</button>
+	      <button id="viewAssumptionsBtn">Assumptions</button>
+	    </div>
+    <div id="status" class="desc">Load files and search for an element id.</div>
+    <div id="pathSection">
+      <h2>Path Explorer</h2>
+      <div id="pathList" class="mono empty">No paths.</div>
+    </div>
+    <div id="assumptionsSection" style="display:none;">
+      <h2>Assumptions</h2>
+      <div id="assumptionsPanel" class="card">
+        <h3>Assumptions & Overrides</h3>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:8px;">
+          <label style="font-size:12px;color:var(--muted);">Path Explorer mode
+            <select id="pathExplorerMode" style="margin-left:6px;background:#0f1730;color:var(--text);border:1px solid #2c3b68;border-radius:8px;padding:6px;">
+              <option value="discovery">Discovery (Unknown)</option>
+              <option value="assumptions">Assumptions (Pruned)</option>
+            </select>
+          </label>
+          <label style="font-size:12px;color:var(--muted);">
+            <input id="showPlatformSymbols" type="checkbox" />
+            Show platform/builtin symbols
+          </label>
+          <label style="font-size:12px;color:var(--muted);">Max depth / function
+            <input id="maxDepthPerFn" type="number" min="1" max="50" value="4" style="width:70px;margin-left:6px;background:#0f1730;color:var(--text);border:1px solid #2c3b68;border-radius:8px;padding:6px;" />
+          </label>
+          <label style="font-size:12px;color:var(--muted);">Max paths
+            <input id="maxPaths" type="number" min="10" max="50000" value="5000" style="width:90px;margin-left:6px;background:#0f1730;color:var(--text);border:1px solid #2c3b68;border-radius:8px;padding:6px;" />
+          </label>
+        </div>
+        <div class="section-title">Symbol availability</div>
+        <div id="symbolAssumptions" class="mono empty">No global symbols discovered yet.</div>
+        <div class="section-title">Predicate overrides</div>
+        <div id="predicateOverrides" class="mono empty">No predicates discovered yet.</div>
+      </div>
+    </div>
+    <div id="resultSection" style="display:none;">
+      <h2>Results</h2>
+      <div id="resultsTable">
+        <div class="row">
+          <div class="cell">
+            <h3>Selected Path & Mutations</h3>
+            <div id="callChain" class="mono empty">No data.</div>
+          </div>
+        </div>
+        <div class="row">
+          <div class="cell">
+            <h3>Code Viewer</h3>
+            <div id="codeViewer" class="mono empty">No code.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div id="drillSection" style="display:none;">
+      <h2>Chain Sequence (Client / Server)</h2>
+      <div style="display:flex; gap:12px; flex-wrap:wrap;">
+        <div style="flex:1; min-width:280px; border:1px solid #2c3b68; border-radius:8px; padding:8px;">
+          <div style="color:#7ce7ac; margin-bottom:6px;">Client</div>
+          <div id="clientDrill" class="mono empty">No client methods.</div>
+        </div>
+        <div style="flex:1; min-width:280px; border:1px solid #2c3b68; border-radius:8px; padding:8px;">
+          <div style="color:#7ce7ac; margin-bottom:6px;">Server</div>
+          <div id="serverDrill" class="mono empty">No server calls.</div>
+        </div>
+      </div>
+    </div>
+	    <div id="orderedDrillSection" style="display:none;">
+	      <h2>Drilldown</h2>
+	      <div style="display:flex; gap:12px; flex-wrap:wrap;">
+	        <div style="flex:1; min-width:280px; border:1px solid #2c3b68; border-radius:8px; padding:8px;">
+	          <div style="color:#7ce7ac; margin-bottom:6px;">Execution Bundle</div>
+	          <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px;">
+	            <button id="bundleGenerateBtn" style="padding:6px 10px;border-radius:10px;">Generate</button>
+	            <button id="bundleCopyContractBtn" style="padding:6px 10px;border-radius:10px;background:#182344;color:var(--text);border:1px solid #2c3b68;">Copy contract</button>
+	            <button id="bundleCopyDepsTemplateBtn" style="padding:6px 10px;border-radius:10px;background:#182344;color:var(--text);border:1px solid #2c3b68;">Copy deps template</button>
+	            <button id="bundleCopyBtn" style="padding:6px 10px;border-radius:10px;background:#182344;color:var(--text);border:1px solid #2c3b68;">Copy bundle</button>
+	            <button id="bundleDownloadBtn" style="padding:6px 10px;border-radius:10px;background:#182344;color:var(--text);border:1px solid #2c3b68;">Download .js</button>
+	          </div>
+	          <div class="section-title">Dependency contract (required)</div>
+	          <div id="bundleContract" class="mono empty">No contract. Click Generate.</div>
+	          <div class="section-title">Dependency values (JSON)</div>
+	          <textarea id="bundleDepsJson" class="mono" style="width:100%;min-height:160px;background:#0f1730;color:var(--text);border:1px solid #2c3b68;border-radius:8px;padding:8px;resize:vertical;" spellcheck="false"></textarea>
+	          <div style="margin-top:6px;font-size:12px;color:var(--muted);">
+	            Paste valid JSON, or a JS object literal. Use `__mock__`/`null` for namespaces (auto-mocked). Provide `__entryArgs` as an array.
+	          </div>
+	          <div class="section-title">Dependency overrides (JS expression)</div>
+	          <textarea id="bundleDepsJs" class="mono" style="width:100%;min-height:90px;background:#0f1730;color:var(--text);border:1px solid #2c3b68;border-radius:8px;padding:8px;resize:vertical;" spellcheck="false" placeholder="Example: ({ myFn: (x) => x, alert: (msg) => console.log('ALERT', msg) })"></textarea>
+	          <div style="display:flex; gap:8px; flex-wrap:wrap; margin:10px 0;">
+	            <button id="bundleRunBtn" style="padding:6px 10px;border-radius:10px;background:#5ce6b8;color:#041026;">Run in browser</button>
+	          </div>
+	          <div class="section-title">Execution logs (first 20)</div>
+	          <div id="bundleRunLogs" class="mono empty">No run yet.</div>
+	          <div class="section-title">Execution result</div>
+	          <div id="bundleRunResult" class="mono empty">No run yet.</div>
+	          <div class="section-title">Bundle output</div>
+	          <textarea id="bundleOutput" class="mono" style="width:100%;min-height:220px;background:#0f1730;color:var(--text);border:1px solid #2c3b68;border-radius:8px;padding:8px;resize:vertical;" spellcheck="false" readonly></textarea>
+	        </div>
+	        <div style="flex:1; min-width:280px; border:1px solid #2c3b68; border-radius:8px; padding:8px;">
+	          <div style="color:#7ce7ac; margin-bottom:6px;">Drilldown Path Explorer</div>
+	          <div id="drilldownPathList" class="mono empty">No drilldown paths.</div>
+	        </div>
+        <div style="flex:1; min-width:280px; border:1px solid #2c3b68; border-radius:8px; padding:8px;">
+          <div style="color:#7ce7ac; margin-bottom:6px;">Client (Raw Order)</div>
+          <div id="clientOrderedDrill" class="mono empty">No client methods.</div>
+        </div>
+        <div style="flex:1; min-width:280px; border:1px solid #2c3b68; border-radius:8px; padding:8px;">
+          <div style="color:#7ce7ac; margin-bottom:6px;">Server (Raw Order)</div>
+          <div id="serverOrderedDrill" class="mono empty">No server calls.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</main>
+<script>
+(() => {
+  const fileInput = document.getElementById('fileInput');
+  const folderInput = document.getElementById('folderInput');
+  const runBtn = document.getElementById('runBtn');
+  const searchIdEl = document.getElementById('searchId');
+  const statusEl = document.getElementById('status');
+  const callChainEl = document.getElementById('callChain'); // current path summary
+  const htmlChooserEl = document.getElementById('htmlChooser');
+  const codeViewerEl = document.getElementById('codeViewer');
+  const pathListEl = document.getElementById('pathList');
+  const assumptionsPanelEl = document.getElementById('assumptionsPanel');
+  const pathExplorerModeEl = document.getElementById('pathExplorerMode');
+  const showPlatformSymbolsEl = document.getElementById('showPlatformSymbols');
+  const maxDepthPerFnEl = document.getElementById('maxDepthPerFn');
+  const maxPathsEl = document.getElementById('maxPaths');
+  const symbolAssumptionsEl = document.getElementById('symbolAssumptions');
+  const predicateOverridesEl = document.getElementById('predicateOverrides');
+  const pathSection = document.getElementById('pathSection');
+  const assumptionsSection = document.getElementById('assumptionsSection');
+  const resultSection = document.getElementById('resultSection');
+  const drillSection = document.getElementById('drillSection');
+  const viewPathsBtn = document.getElementById('viewPathsBtn');
+  const viewResultsBtn = document.getElementById('viewResultsBtn');
+  const viewDrillBtn = document.getElementById('viewDrillBtn');
+  const viewOrderedDrillBtn = document.getElementById('viewOrderedDrillBtn');
+  const viewAssumptionsBtn = document.getElementById('viewAssumptionsBtn');
+  const clientDrillEl = document.getElementById('clientDrill');
+  const serverDrillEl = document.getElementById('serverDrill');
+  const orderedDrillSection = document.getElementById('orderedDrillSection');
+	  const clientOrderedDrillEl = document.getElementById('clientOrderedDrill');
+	  const serverOrderedDrillEl = document.getElementById('serverOrderedDrill');
+	  const drilldownPathListEl = document.getElementById('drilldownPathList');
+	  const bundleGenerateBtn = document.getElementById('bundleGenerateBtn');
+	  const bundleCopyContractBtn = document.getElementById('bundleCopyContractBtn');
+	  const bundleCopyDepsTemplateBtn = document.getElementById('bundleCopyDepsTemplateBtn');
+	  const bundleCopyBtn = document.getElementById('bundleCopyBtn');
+	  const bundleDownloadBtn = document.getElementById('bundleDownloadBtn');
+	  const bundleContractEl = document.getElementById('bundleContract');
+	  const bundleDepsJsonEl = document.getElementById('bundleDepsJson');
+	  const bundleDepsJsEl = document.getElementById('bundleDepsJs');
+	  const bundleRunBtn = document.getElementById('bundleRunBtn');
+	  const bundleRunLogsEl = document.getElementById('bundleRunLogs');
+	  const bundleRunResultEl = document.getElementById('bundleRunResult');
+	  const bundleOutputEl = document.getElementById('bundleOutput');
+  const WALK = window.acornWalk || (window.acorn && window.acorn.walk) || window.walk;
+  if (!WALK) {
+    console.error('acorn-walk not found. Ensure the CDN script loads.');
+  }
+
+  let fileStore = []; // {name, text, type}
+  let staticConstCache = null;
+  let functionTable = new Map(); // name -> {defs: [record]}
+  let globalNames = new Set();
+  let cachedMatches = [];
+  let selectedHtmlPath = null;
+  let codeSnippets = [];
+  let branchRegistry = [];
+  let branchToggles = {}; // id -> bool (true branch = consequent/success)
+  let chainMethods = [];
+  let currentChains = [];
+  let selectedPathIdx = 0;
+  let branchMeta = {}; // id -> {file,line,label,ignorePath}
+  let branchLineLookup = {};
+  let currentView = "paths";
+  let drillExpanded = {};
+  let startFunctionList = [];
+  let drilldownContext = null;
+  let pathExplorerMode = 'discovery';
+  let globalAssumptions = {
+    symbols: {}, // path -> 'U'|'T'|'F'
+    predicates: {}, // branchId -> 'U'|'T'|'F'
+    predicateNames: {} // branchId -> string
+  };
+  let discoveredSymbolPaths = new Set();
+  let showPlatformSymbols = false;
+  let globalPathFoldExpanded = {};
+  let drilldownPathFoldExpanded = {};
+  let analysisReachableFns = new Set();
+  let analysisReachableBranchIds = new Set();
+  let analysisRelevantSymbolPaths = new Set();
+
+  const TRI = { Unknown: 'U', True: 'T', False: 'F' };
+
+  function triFromBool(b) { return b ? TRI.True : TRI.False; }
+  function triToBool(t) { return t === TRI.True ? true : t === TRI.False ? false : null; }
+  function triNot(t) { return t === TRI.True ? TRI.False : t === TRI.False ? TRI.True : TRI.Unknown; }
+  function triAnd(a, b) {
+    if (a === TRI.False || b === TRI.False) return TRI.False;
+    if (a === TRI.True && b === TRI.True) return TRI.True;
+    return TRI.Unknown;
+  }
+  function triOr(a, b) {
+    if (a === TRI.True || b === TRI.True) return TRI.True;
+    if (a === TRI.False && b === TRI.False) return TRI.False;
+    return TRI.Unknown;
+  }
+
+  function cloneObj(obj) {
+    return Object.assign({}, obj || {});
+  }
+
+  function ensureDrilldownContext(chains = currentChains, idx = selectedPathIdx) {
+    const pathObj = (chains && chains.length) ? (chains[idx] || chains[0]) : null;
+    const pathKey = pathObj ? JSON.stringify(pathObj.chain || []) + '|' + JSON.stringify(pathObj.decisions || {}) : 'empty';
+    if (drilldownContext && drilldownContext.pathKey === pathKey) return drilldownContext;
+    drilldownContext = createDrilldownContextFromPath(pathObj);
+    return drilldownContext;
+  }
+
+  function createDrilldownContextFromPath(pathObj) {
+    const decisions = cloneObj(pathObj && pathObj.decisions);
+    const firstFn = (pathObj && Array.isArray(pathObj.chain) && pathObj.chain.length) ? pathObj.chain[0] : null;
+    const roots = firstFn ? [firstFn] : (startFunctionList && startFunctionList.length ? [...startFunctionList] : []);
+    return {
+      pathKey: pathObj ? JSON.stringify(pathObj.chain || []) + '|' + JSON.stringify(pathObj.decisions || {}) : 'empty',
+      basePath: pathObj ? { chain: [...(pathObj.chain || [])], decisions: cloneObj(pathObj.decisions) } : { chain: [], decisions: {} },
+      roots,
+      branchDecisions: cloneObj(decisions),
+      expanded: {},
+      assumptions: { inherit: true, symbols: {}, predicates: {} }
+    };
+  }
+
+  function effectiveAssumptionsForDrilldown(ctx) {
+    const out = {
+      symbols: cloneObj(globalAssumptions.symbols),
+      predicates: cloneObj(globalAssumptions.predicates),
+      predicateNames: cloneObj(globalAssumptions.predicateNames)
+    };
+    if (!ctx || !ctx.assumptions) return out;
+    if (!ctx.assumptions.inherit) {
+      out.symbols = cloneObj(ctx.assumptions.symbols);
+      out.predicates = cloneObj(ctx.assumptions.predicates);
+      return out;
+    }
+    Object.entries(ctx.assumptions.symbols || {}).forEach(([k, v]) => { out.symbols[k] = v; });
+    Object.entries(ctx.assumptions.predicates || {}).forEach(([k, v]) => { out.predicates[k] = v; });
+    return out;
+  }
+
+  function normalizeJs(text) {
+    if (!text) return '';
+    // strip BOM and templating tags like <? ... ?>, <?!= ... ?>
+    return text.replace(/^\uFEFF/, '').replace(/<\?[\s\S]*?\?>/g, '');
+  }
+
+  fileInput.addEventListener('change', async (e) => {
+    await ingestFiles(e.target.files, 'file picker');
+  });
+  folderInput.addEventListener('change', async (e) => {
+    await ingestFiles(e.target.files, 'folder');
+  });
+
+  runBtn.addEventListener('click', () => analyze());
+  searchIdEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') analyze(); });
+  viewPathsBtn.addEventListener('click', () => switchView('paths'));
+  viewResultsBtn.addEventListener('click', () => switchView('results'));
+  viewDrillBtn.addEventListener('click', () => switchView('drill'));
+  viewOrderedDrillBtn.addEventListener('click', () => switchView('drillOrdered'));
+  viewAssumptionsBtn && viewAssumptionsBtn.addEventListener('click', () => switchView('assumptions'));
+  pathExplorerModeEl && pathExplorerModeEl.addEventListener('change', () => {
+    pathExplorerMode = pathExplorerModeEl.value || 'discovery';
+    recomputeGlobalPaths();
+  });
+	  showPlatformSymbolsEl && showPlatformSymbolsEl.addEventListener('change', () => {
+	    showPlatformSymbols = !!showPlatformSymbolsEl.checked;
+	    renderAssumptionsPanel();
+	    renderOrderedDrilldown();
+	  });
+  maxDepthPerFnEl && maxDepthPerFnEl.addEventListener('change', () => {
+    recomputeGlobalPaths();
+  });
+  maxPathsEl && maxPathsEl.addEventListener('change', () => {
+    recomputeGlobalPaths();
+  });
+	  let lastBundleResult = null;
+	  let lastBundlePathKey = null;
+
+	  function setBundleEmpty(msg) {
+	    if (bundleContractEl) {
+	      bundleContractEl.classList.add('empty');
+	      bundleContractEl.textContent = msg || 'No contract. Click Generate.';
+	    }
+	    if (bundleRunLogsEl) {
+	      bundleRunLogsEl.classList.add('empty');
+	      bundleRunLogsEl.textContent = 'No run yet.';
+	    }
+	    if (bundleRunResultEl) {
+	      bundleRunResultEl.classList.add('empty');
+	      bundleRunResultEl.textContent = 'No run yet.';
+	    }
+	    if (bundleOutputEl) bundleOutputEl.value = '';
+	    if (bundleDepsJsonEl) bundleDepsJsonEl.value = '';
+	  }
+
+	  function renderBundleContract(result) {
+	    if (!bundleContractEl) return;
+	    if (!result || !result.contract) {
+	      setBundleEmpty('No contract. Click Generate.');
+	      return;
+	    }
+	    const entries = Object.entries(result.contract || {}).sort((a, b) => a[0].localeCompare(b[0]));
+	    if (!entries.length) {
+	      setBundleEmpty('No external dependencies detected for this path.');
+	      return;
+	    }
+	    bundleContractEl.classList.remove('empty');
+	    bundleContractEl.innerHTML = '';
+	    entries.forEach(([name, kind]) => {
+	      const row = document.createElement('div');
+	      row.style.display = 'flex';
+	      row.style.justifyContent = 'space-between';
+	      row.style.gap = '10px';
+	      row.style.padding = '4px 0';
+	      row.style.borderBottom = '1px solid rgba(44,59,104,0.35)';
+	      const left = document.createElement('div');
+	      left.textContent = name;
+	      const right = document.createElement('div');
+	      right.style.color = 'var(--muted)';
+	      right.textContent = String(kind || 'unknown');
+	      row.appendChild(left);
+	      row.appendChild(right);
+	      bundleContractEl.appendChild(row);
+	    });
+	  }
+
+	  function renderRunLogs(runOut) {
+	    if (!bundleRunLogsEl) return;
+	    const logs = (runOut && Array.isArray(runOut.logs)) ? runOut.logs : [];
+	    if (!logs.length) {
+	      bundleRunLogsEl.classList.add('empty');
+	      bundleRunLogsEl.textContent = 'No logs.';
+	      return;
+	    }
+	    bundleRunLogsEl.classList.remove('empty');
+	    const lines = logs.map(l => `[${l.level}] ${l.message}`);
+	    if (runOut && runOut.suppressed) lines.push(`...suppressed: ${runOut.suppressed}`);
+	    bundleRunLogsEl.textContent = lines.join('\n');
+	  }
+
+	  function renderRunResult(runOut) {
+	    if (!bundleRunResultEl) return;
+	    bundleRunResultEl.classList.remove('empty');
+	    bundleRunResultEl.textContent = JSON.stringify(runOut, null, 2);
+	  }
+
+  const UNRESOLVED_STATIC = Symbol('unresolved-static');
+
+  function evalStaticConst(node, env) {
+    if (!node) return UNRESOLVED_STATIC;
+    switch (node.type) {
+      case 'Literal':
+        return node.value;
+      case 'TemplateLiteral': {
+        const parts = [];
+        for (let i = 0; i < node.quasis.length; i++) {
+          parts.push(node.quasis[i].value.cooked || '');
+          if (node.expressions[i]) {
+            const val = evalStaticConst(node.expressions[i], env);
+            if (val === UNRESOLVED_STATIC) return UNRESOLVED_STATIC;
+            parts.push(String(val));
+          }
+        }
+        return parts.join('');
+      }
+      case 'Identifier':
+        return Object.prototype.hasOwnProperty.call(env, node.name) ? env[node.name] : UNRESOLVED_STATIC;
+      case 'UnaryExpression': {
+        if (node.operator === 'typeof') {
+          if (node.argument && node.argument.type === 'Identifier') {
+            if (!Object.prototype.hasOwnProperty.call(env, node.argument.name)) return 'undefined';
+            return typeof env[node.argument.name];
+          }
+          const val = evalStaticConst(node.argument, env);
+          if (val === UNRESOLVED_STATIC) return UNRESOLVED_STATIC;
+          return typeof val;
+        }
+        const val = evalStaticConst(node.argument, env);
+        if (val === UNRESOLVED_STATIC) return UNRESOLVED_STATIC;
+        if (node.operator === '!') return !val;
+        if (node.operator === '+') return +val;
+        if (node.operator === '-') return -val;
+        return UNRESOLVED_STATIC;
+      }
+      case 'BinaryExpression': {
+        const left = evalStaticConst(node.left, env);
+        if (left === UNRESOLVED_STATIC) return UNRESOLVED_STATIC;
+        const right = evalStaticConst(node.right, env);
+        if (right === UNRESOLVED_STATIC) return UNRESOLVED_STATIC;
+        switch (node.operator) {
+          case '+':
+            return left + right;
+          case '-':
+            return left - right;
+          case '*':
+            return left * right;
+          case '/':
+            return left / right;
+          case '===':
+            return left === right;
+          case '!==':
+            return left !== right;
+          case '==':
+            return left == right;
+          case '!=':
+            return left != right;
+          case '<':
+            return left < right;
+          case '<=':
+            return left <= right;
+          case '>':
+            return left > right;
+          case '>=':
+            return left >= right;
+          default:
+            return UNRESOLVED_STATIC;
+        }
+      }
+      case 'LogicalExpression': {
+        const left = evalStaticConst(node.left, env);
+        if (left === UNRESOLVED_STATIC) return UNRESOLVED_STATIC;
+        if (node.operator === '||') {
+          if (left) return left;
+          const right = evalStaticConst(node.right, env);
+          return right === UNRESOLVED_STATIC ? UNRESOLVED_STATIC : right;
+        }
+        if (node.operator === '&&') {
+          if (!left) return left;
+          const right = evalStaticConst(node.right, env);
+          return right === UNRESOLVED_STATIC ? UNRESOLVED_STATIC : right;
+        }
+        return UNRESOLVED_STATIC;
+      }
+      case 'ConditionalExpression': {
+        const test = evalStaticConst(node.test, env);
+        if (test === UNRESOLVED_STATIC) return UNRESOLVED_STATIC;
+        return evalStaticConst(test ? node.consequent : node.alternate, env);
+      }
+      case 'ArrayExpression': {
+        const out = [];
+        for (const el of node.elements) {
+          const val = evalStaticConst(el, env);
+          if (val === UNRESOLVED_STATIC) return UNRESOLVED_STATIC;
+          out.push(val);
+        }
+        return out;
+      }
+      case 'ObjectExpression': {
+        const out = {};
+        for (const prop of node.properties || []) {
+          if (!prop || prop.type !== 'Property') return UNRESOLVED_STATIC;
+          let key;
+          if (prop.key.type === 'Identifier') key = prop.key.name;
+          else if (prop.key.type === 'Literal') key = String(prop.key.value);
+          else if (prop.key.type === 'TemplateLiteral') {
+            key = evalStaticConst(prop.key, env);
+          }
+          if (!key) return UNRESOLVED_STATIC;
+          const val = evalStaticConst(prop.value, env);
+          if (val === UNRESOLVED_STATIC) return UNRESOLVED_STATIC;
+          out[key] = val;
+        }
+        return out;
+      }
+      case 'MemberExpression': {
+        const base = evalStaticConst(node.object, env);
+        if (base === UNRESOLVED_STATIC || !base) return UNRESOLVED_STATIC;
+        let key;
+        if (node.computed) {
+          key = evalStaticConst(node.property, env);
+          if (key === UNRESOLVED_STATIC) return UNRESOLVED_STATIC;
+        } else if (node.property && node.property.type === 'Identifier') {
+          key = node.property.name;
+        }
+        if (typeof key === 'undefined' || key === null) return UNRESOLVED_STATIC;
+        if (Object.prototype.hasOwnProperty.call(base, key)) return base[key];
+        return UNRESOLVED_STATIC;
+      }
+      default:
+        return UNRESOLVED_STATIC;
+    }
+  }
+
+  function collectStaticConstMap() {
+    const decls = [];
+    const files = fileStore.filter(f => f.type === 'js' || f.type === 'html');
+    files.forEach(file => {
+      const ast = tryParseJs(file.text, file.name, false);
+      if (!ast || !Array.isArray(ast.body)) return;
+      ast.body.forEach(node => {
+        if (node && node.type === 'VariableDeclaration') {
+          (node.declarations || []).forEach(decl => {
+            if (!decl || !decl.id || decl.id.type !== 'Identifier' || !decl.init) return;
+            decls.push({ name: decl.id.name, init: decl.init });
+          });
+        }
+      });
+    });
+
+    const env = {};
+    const pending = new Map();
+    decls.forEach(d => {
+      if (!Object.prototype.hasOwnProperty.call(env, d.name) && !pending.has(d.name)) {
+        pending.set(d.name, d.init);
+      }
+    });
+
+    for (let pass = 0; pass < 10 && pending.size > 0; pass++) {
+      let progressed = false;
+      for (const [name, init] of Array.from(pending.entries())) {
+        const val = evalStaticConst(init, env);
+        if (val === UNRESOLVED_STATIC) continue;
+        env[name] = val;
+        pending.delete(name);
+        progressed = true;
+      }
+      if (!progressed) break;
+    }
+    return env;
+  }
+
+  function getStaticConstMap() {
+    if (staticConstCache) return staticConstCache;
+    staticConstCache = collectStaticConstMap();
+    return staticConstCache;
+  }
+
+  function buildDepsTemplate(contract) {
+    const constMap = getStaticConstMap();
+    const tmpl = {};
+    Object.entries(contract || {}).forEach(([k, kind]) => {
+      if (k === '__entryArgs') { tmpl[k] = []; return; }
+      if (kind === 'namespace') tmpl[k] = '__mock__';
+      else if (constMap && Object.prototype.hasOwnProperty.call(constMap, k)) tmpl[k] = constMap[k];
+      else tmpl[k] = null;
+    });
+    if (!('__entryArgs' in tmpl)) tmpl.__entryArgs = [];
+    return tmpl;
+  }
+
+	  function parseDepsJson(text) {
+	    const t = String(text || '').trim();
+	    if (!t) return null;
+	    try {
+	      return JSON.parse(t);
+	    } catch (e) {
+	      // Allow JS object literal as a fallback (supports functions via overrides, but this helps with unquoted keys).
+	      try {
+	        const expr = (t.startsWith('{') || t.startsWith('[') || t.startsWith('(')) ? t : `{${t}}`;
+	        return (new Function(`"use strict"; return (${expr});`))();
+	      } catch (e2) {
+	        const msg = e && e.message ? e.message : String(e);
+	        throw new Error('Invalid JSON (or object literal): ' + msg);
+	      }
+	    }
+	  }
+
+	  function parseDepsOverridesJs(text) {
+	    const t = String(text || '').trim();
+	    if (!t) return null;
+	    // Evaluate as a JS expression returning an object; allows functions.
+	    return (new Function(`"use strict"; return (${t});`))();
+	  }
+
+	  function describeBundleSyntaxError(err, code) {
+	    const message = err && err.message ? err.message : String(err);
+	    const loc = err && err.loc ? err.loc : null;
+	    if (!loc) return message;
+	    const line = loc.line || 0;
+	    const column = (typeof loc.column === 'number' ? loc.column + 1 : 0);
+	    const snippet = extractLines(code, line, 2);
+	    return `${message} at line ${line}, column ${column}\n${snippet}`;
+	  }
+
+	  function assertBundleParses(code) {
+	    if (typeof acorn === 'undefined' || !acorn) return;
+	    try {
+	      acorn.parse(code, { ecmaVersion: 'latest', sourceType: 'script', locations: true });
+	    } catch (e) {
+	      throw new Error(describeBundleSyntaxError(e, code));
+	    }
+	  }
+
+	  function evalBundleGetRun(bundleText) {
+	    const code = String(bundleText || '');
+	    if (!code.trim()) throw new Error('Bundle is empty.');
+	    assertBundleParses(code);
+	    const fn = new Function(`${code}\n; return (typeof __run === 'function') ? __run : (typeof window !== 'undefined' ? window.__run : null);`);
+	    const run = fn();
+	    if (typeof run !== 'function') throw new Error('Bundle did not define __run().');
+	    return run;
+	  }
+
+	  async function copyText(text) {
+	    const t = String(text || '');
+	    if (!t) return;
+	    try {
+	      await navigator.clipboard.writeText(t);
+	    } catch (e) {
+	      // Fallback for restricted clipboard contexts
+	      window.prompt('Copy to clipboard:', t);
+	    }
+	  }
+
+	  function downloadText(filename, text) {
+	    const blob = new Blob([String(text || '')], { type: 'text/javascript;charset=utf-8' });
+	    const url = URL.createObjectURL(blob);
+	    const a = document.createElement('a');
+	    a.href = url;
+	    a.download = filename || 'bundle.js';
+	    document.body.appendChild(a);
+	    a.click();
+	    a.remove();
+	    setTimeout(() => URL.revokeObjectURL(url), 500);
+	  }
+
+	  function currentBundlePathKey() {
+	    const ctx = ensureDrilldownContext();
+	    return ctx ? ctx.pathKey : null;
+	  }
+
+	  function ensureBundleUpToDateUI() {
+	    const key = currentBundlePathKey();
+	    if (key !== lastBundlePathKey) {
+	      lastBundlePathKey = key;
+	      lastBundleResult = null;
+	      setBundleEmpty('No contract for this selection. Click Generate.');
+	    }
+	  }
+
+	  bundleGenerateBtn && bundleGenerateBtn.addEventListener('click', () => {
+	    try {
+	      const res = generateLocalBundleForSelectedPath();
+	      lastBundleResult = res;
+	      lastBundlePathKey = currentBundlePathKey();
+	      renderBundleContract(res);
+	      if (bundleOutputEl) bundleOutputEl.value = res.bundle || '';
+	      if (bundleDepsJsonEl) bundleDepsJsonEl.value = JSON.stringify(buildDepsTemplate(res.contract || {}), null, 2);
+	    } catch (e) {
+	      setBundleEmpty('Bundle generation failed: ' + (e && e.message ? e.message : String(e)));
+	    }
+	  });
+	  bundleCopyContractBtn && bundleCopyContractBtn.addEventListener('click', () => {
+	    if (!lastBundleResult) return;
+	    copyText(JSON.stringify(lastBundleResult.contract || {}, null, 2));
+	  });
+	  bundleCopyDepsTemplateBtn && bundleCopyDepsTemplateBtn.addEventListener('click', () => {
+	    if (!lastBundleResult) return;
+	    copyText(JSON.stringify(buildDepsTemplate(lastBundleResult.contract || {}), null, 2));
+	  });
+	  bundleCopyBtn && bundleCopyBtn.addEventListener('click', () => {
+	    if (!lastBundleResult) return;
+	    copyText(lastBundleResult.bundle || '');
+	  });
+	  bundleDownloadBtn && bundleDownloadBtn.addEventListener('click', () => {
+	    if (!lastBundleResult) return;
+	    downloadText((lastBundleResult.entry || 'bundle') + '.bundle.js', lastBundleResult.bundle || '');
+	  });
+
+	  bundleRunBtn && bundleRunBtn.addEventListener('click', () => {
+	    if (!lastBundleResult) {
+	      try {
+	        const res = generateLocalBundleForSelectedPath();
+	        lastBundleResult = res;
+	        lastBundlePathKey = currentBundlePathKey();
+	        renderBundleContract(res);
+	        if (bundleOutputEl) bundleOutputEl.value = res.bundle || '';
+	        if (bundleDepsJsonEl) bundleDepsJsonEl.value = JSON.stringify(buildDepsTemplate(res.contract || {}), null, 2);
+	      } catch (e) {
+	        setBundleEmpty('Bundle generation failed: ' + (e && e.message ? e.message : String(e)));
+	        return;
+	      }
+	    }
+	    try {
+	      const depsJson = parseDepsJson(bundleDepsJsonEl ? bundleDepsJsonEl.value : '');
+	      if (!depsJson || typeof depsJson !== 'object') throw new Error('Provide dependency values JSON.');
+	      const overrides = parseDepsOverridesJs(bundleDepsJsEl ? bundleDepsJsEl.value : '');
+	      if (overrides && typeof overrides === 'object') Object.assign(depsJson, overrides);
+	      const run = evalBundleGetRun(lastBundleResult.bundle || '');
+	      const runOut = run(depsJson);
+	      renderRunLogs(runOut);
+	      renderRunResult(runOut);
+	    } catch (e) {
+	      renderRunLogs({ logs: [{ level: 'error', message: String(e && e.message ? e.message : e) }], suppressed: 0 });
+	      renderRunResult({ error: String(e && e.message ? e.message : e) });
+        console.log('Error running bundle:', e);
+	    }
+	  });
+
+  async function ingestFiles(fileList, sourceLabel) {
+    const files = Array.from(fileList || []);
+    if (!files.length) return;
+    fileStore = [];
+    staticConstCache = null;
+    cachedMatches = [];
+    selectedHtmlPath = null;
+    codeSnippets = [];
+    branchRegistry = [];
+    branchToggles = {};
+    chainMethods = [];
+    currentChains = [];
+    selectedPathIdx = 0;
+    branchMeta = {};
+    branchLineLookup = {};
+    drillExpanded = {};
+    startFunctionList = [];
+    drilldownContext = null;
+    discoveredSymbolPaths = new Set();
+    globalAssumptions = { symbols: {}, predicates: {}, predicateNames: {} };
+    globalPathFoldExpanded = {};
+    drilldownPathFoldExpanded = {};
+    renderHtmlChooser([]);
+    for (const f of files) {
+      const text = await f.text();
+      fileStore.push({ name: f.webkitRelativePath || f.name, text, type: detectType(f.name) });
+    }
+    buildIndexes();
+    status('Loaded ' + fileStore.length + ' file(s) from ' + sourceLabel + '. Ready.');
+  }
+
+  function detectType(name) {
+    const lower = name.toLowerCase();
+    if (lower.endsWith('.js.html') || lower.endsWith('.gs.html')) return 'js';
+    if (lower.endsWith('.html') || lower.endsWith('.htm')) return 'html';
+    if (lower.endsWith('.js') || lower.endsWith('.mjs') || lower.endsWith('.cjs') || lower.endsWith('.gs')) return 'js';
+    return 'txt';
+  }
+
+  function status(msg) { statusEl.textContent = msg; }
+
+  function buildIndexes() {
+    if (!WALK) {
+      status('acorn-walk failed to load; check network and reload.');
+      return;
+    }
+    functionTable = new Map();
+    globalNames = new Set();
+    codeSnippets = [];
+    branchRegistry = [];
+    branchMeta = {};
+    branchToggles = {};
+    branchLineLookup = {};
+    chainMethods = [];
+    currentChains = [];
+    selectedPathIdx = 0;
+    startFunctionList = [];
+    drilldownContext = null;
+    drillExpanded = {};
+    discoveredSymbolPaths = new Set();
+    globalPathFoldExpanded = {};
+    drilldownPathFoldExpanded = {};
+    const jsFiles = fileStore.filter(f => f.type === 'js');
+    for (const file of jsFiles) {
+      parseJsFile(file);
+    }
+  }
+
+  function switchView(view) {
+    currentView = view;
+    if (view === 'paths') {
+      pathSection.style.display = '';
+      if (assumptionsSection) assumptionsSection.style.display = 'none';
+      resultSection.style.display = 'none';
+      drillSection.style.display = 'none';
+      orderedDrillSection.style.display = 'none';
+    } else {
+      pathSection.style.display = 'none';
+      if (assumptionsSection) assumptionsSection.style.display = view === 'assumptions' ? '' : 'none';
+      resultSection.style.display = view === 'results' ? '' : 'none';
+      drillSection.style.display = view === 'drill' ? '' : 'none';
+      orderedDrillSection.style.display = view === 'drillOrdered' ? '' : 'none';
+    }
+  }
+
+  function parseJsFile(file) {
+    const ast = tryParseJs(file.text, file.name, true);
+    if (!ast) return;
+    if (ast.__src) file.parseText = ast.__src;
+
+    // collect globals (var/let/const + function/class declarations at Program)
+    WALK && WALK.ancestor(ast, {
+      VariableDeclaration(node, ancestors) {
+        const inFn = ancestors.some(a => /Function(Expression|Declaration)?$/.test(a.type) || a.type === 'ArrowFunctionExpression');
+        if (inFn) return;
+        if (node.kind === 'var' || node.kind === 'let' || node.kind === 'const') {
+          node.declarations.forEach(d => collectPatternIds(d.id, globalNames));
+        }
+      },
+      FunctionDeclaration(node, ancestors) {
+        const inFn = ancestors.some(a => /Function(Expression|Declaration)?$/.test(a.type) || a.type === 'ArrowFunctionExpression');
+        if (inFn) return;
+        if (node.id && node.id.type === 'Identifier') globalNames.add(node.id.name);
+      },
+      ClassDeclaration(node, ancestors) {
+        const inFn = ancestors.some(a => /Function(Expression|Declaration)?$/.test(a.type) || a.type === 'ArrowFunctionExpression');
+        if (inFn) return;
+        if (node.id && node.id.type === 'Identifier') globalNames.add(node.id.name);
+      }
+    });
+
+    const scopeStack = [];
+    function collectFunctionScopedLocals(bodyNode, locals) {
+      if (!bodyNode || !locals || !WALK) return;
+      const base = WALK.base;
+      WALK.recursive(
+        bodyNode,
+        null,
+        {
+          FunctionDeclaration(node) {
+            if (node.id && node.id.type === 'Identifier') locals.add(node.id.name);
+            // don't descend into nested function bodies
+          },
+          FunctionExpression() {
+            // don't descend into nested function bodies
+          },
+          ArrowFunctionExpression() {
+            // don't descend into nested function bodies
+          },
+          ClassDeclaration(node) {
+            if (node.id && node.id.type === 'Identifier') locals.add(node.id.name);
+            // don't descend into nested class bodies
+          },
+          VariableDeclarator(node) {
+            collectPatternIds(node.id, locals);
+            base.VariableDeclarator(node, null, () => {});
+          },
+          CatchClause(node, st, c) {
+            if (node.param) collectPatternIds(node.param, locals);
+            base.CatchClause(node, st, c);
+          }
+        },
+        base
+      );
+    }
+
+    function enterFunction(node, name, fileName) {
+      const locals = new Set();
+      (node.params || []).forEach(p => collectPatternIds(p, locals));
+      // Pre-collect all locals in the function scope so guard symbol discovery doesn't surface locals.
+      collectFunctionScopedLocals(node.body || node, locals);
+      const rec = {
+        name: name || inferredName(node) || '<anonymous>',
+        file: fileName,
+        node,
+        calls: new Set(),
+        callsInfo: [],
+        callsOrder: [],
+        serverCalls: [],
+        assignments: { globals: [], props: [] },
+        sheetWrites: [],
+        locals,
+        branchIds: [],
+        loc: node.loc
+      };
+      addFunctionRecord(rec);
+      scopeStack.push(rec);
+    }
+    function exitFunction() { scopeStack.pop(); }
+
+    WALK && WALK.ancestor(ast, {
+      FunctionDeclaration(node, ancestors) {
+        enterFunction(node, node.id && node.id.name, file.name);
+        walkBody(node.body, ancestors);
+        exitFunction();
+      },
+      FunctionExpression(node, ancestors) {
+        const baseName = node.id ? node.id.name : inferredNameFromAncestors(ancestors);
+        const name = baseName !== '<anonymous>' ? baseName : (inferGsRunHandlerName(node, ancestors) || baseName);
+        enterFunction(node, name, file.name);
+        walkBody(node.body, ancestors);
+        exitFunction();
+      },
+      ArrowFunctionExpression(node, ancestors) {
+        const baseName = inferredNameFromAncestors(ancestors);
+        const name = baseName !== '<anonymous>' ? baseName : (inferGsRunHandlerName(node, ancestors) || baseName);
+        enterFunction(node, name, file.name);
+        walkBody(node.body, ancestors);
+        exitFunction();
+      }
+    });
+
+    function walkBody(body, ancestors) {
+      const current = scopeStack[scopeStack.length - 1];
+      if (!current || !WALK) return;
+      const base = WALK.base;
+      WALK.recursive(
+        body,
+        { branch: null },
+        {
+          FunctionDeclaration(node, st, c) {
+            if (node.id && node.id.type === 'Identifier') current.locals.add(node.id.name);
+            // do not descend into nested function bodies for the outer function record
+          },
+          FunctionExpression(node, st, c) {
+            // do not descend into nested function bodies for the outer function record
+          },
+          ArrowFunctionExpression(node, st, c) {
+            // do not descend into nested function bodies for the outer function record
+          },
+          ClassDeclaration(node, st, c) {
+            if (node.id && node.id.type === 'Identifier') current.locals.add(node.id.name);
+            // do not descend into nested class bodies for the outer function record
+          },
+          CatchClause(node, st, c) {
+            if (node.param) collectPatternIds(node.param, current.locals);
+            base.CatchClause(node, st, c);
+          },
+          VariableDeclaration(node, st, c) {
+            node.declarations.forEach(d => collectPatternIds(d.id, current.locals));
+            base.VariableDeclaration(node, st, c);
+          },
+          AssignmentExpression(node, st, c) {
+            handleAssignment(node, current);
+            base.AssignmentExpression(node, st, c);
+          },
+          UpdateExpression(node, st, c) {
+            if (node.argument.type === 'Identifier') {
+              const name = node.argument.name;
+              if (!current.locals.has(name)) current.assignments.globals.push(name);
+            }
+            base.UpdateExpression(node, st, c);
+          },
+          CallExpression(node, st, c) {
+            handleCallWithBranch(node, current, st.branch);
+            base.CallExpression(node, st, c);
+          },
+          IfStatement(node, st, c) {
+            const line = node.loc ? node.loc.start.line : '?';
+            const id = `${current.file || ''}:${current.name}:${node && typeof node.start === 'number' ? node.start : line}`;
+            registerBranch(id, `if @ ${current.name}:${line}`, current.name, current, node.loc ? node.loc.start.line : null);
+            if (branchMeta[id]) branchMeta[id].testAst = node.test;
+            if (branchMeta[id]) {
+              branchMeta[id].funcName = current.name;
+              branchMeta[id].col = node.loc && node.loc.start ? node.loc.start.column : null;
+              branchMeta[id].startOffset = typeof node.start === 'number' ? node.start : null;
+              branchMeta[id].endOffset = typeof node.end === 'number' ? node.end : null;
+              branchMeta[id].testLoc = node.test && node.test.loc ? node.test.loc : null;
+              branchMeta[id].testSource = (node.test && typeof node.test.start === 'number' && typeof node.test.end === 'number')
+                ? file.text.slice(node.test.start, node.test.end)
+                : null;
+            }
+            discoverSymbolsInTest(node.test, current.locals);
+            c(node.test, st);
+            const branchObj = { branch: { id, val: true } };
+            const elseObj = { branch: { id, val: false } };
+            c(node.consequent, branchObj);
+            if (node.alternate) c(node.alternate, elseObj);
+          }
+        },
+        base
+      );
+    }
+  }
+
+  function registerBranch(id, label, funcName, current, lineNumber) {
+    if (branchRegistry.find(b => b.id === id)) return;
+    branchRegistry.push({ id, label, funcName });
+    branchMeta[id] = {
+      label,
+      file: current ? current.file : '',
+      line: lineNumber || (current && current.loc ? current.loc.start.line : null),
+      ignorePath: false,
+      locals: current && current.locals ? Array.from(current.locals) : [],
+    };
+    if (funcName && (lineNumber || lineNumber === 0)) {
+      const key = `${current ? current.file : ''}:${funcName}:${lineNumber}`;
+      if (!Array.isArray(branchLineLookup[key])) branchLineLookup[key] = [];
+      branchLineLookup[key].push(id);
+      branchLineLookup[key].sort((a, b) => (branchMeta[a]?.col ?? 0) - (branchMeta[b]?.col ?? 0));
+    }
+    if (current && current.branchIds && !current.branchIds.includes(id)) current.branchIds.push(id);
+    if (!(id in branchToggles)) branchToggles[id] = false; // default false branch
+  }
+
+  function branchIdFromIf(currentFuncName, lineNumber) {
+    if (!currentFuncName || !lineNumber) return null;
+    return `${currentFuncName}:${lineNumber}`;
+  }
+
+  function objectPathFromNode(node) {
+    const n = node && node.type === 'ChainExpression' ? node.expression : node;
+    if (!n) return null;
+    if (n.type === 'Identifier') return n.name;
+    if (n.type !== 'MemberExpression') return null;
+    const parts = [];
+    let cur = n;
+    while (cur && cur.type === 'MemberExpression') {
+      if (cur.property && cur.property.type === 'Identifier' && !cur.computed) parts.unshift(cur.property.name);
+      else return null;
+      cur = cur.object && cur.object.type === 'ChainExpression' ? cur.object.expression : cur.object;
+    }
+    if (cur && cur.type === 'Identifier') parts.unshift(cur.name);
+    else return null;
+    return parts.join('.');
+  }
+
+  function addDiscoveredSymbolPath(path) {
+    if (!path) return;
+    const parts = String(path).split('.').filter(Boolean);
+    for (let i = 1; i <= parts.length; i++) {
+      discoveredSymbolPaths.add(parts.slice(0, i).join('.'));
+    }
+  }
+
+  function isPlatformOrBuiltinRoot(root) {
+    if (!root) return false;
+    const r = String(root);
+    if (r === 'this' || r === 'arguments') return true;
+    // Common JS builtins + DOM
+    const jsBuiltins = new Set([
+      'Array','Object','String','Number','Boolean','Date','Math','JSON','RegExp','Error','Promise','Map','Set',
+      'console','window','document','navigator','location','history',
+      'localStorage','sessionStorage','fetch','XMLHttpRequest','FormData',
+      'setTimeout','setInterval','clearTimeout','clearInterval',
+      'parseInt','parseFloat','isNaN','isFinite'
+    ]);
+    if (jsBuiltins.has(r)) return true;
+    // Google Apps Script global services/namespaces
+    const gasBuiltins = new Set([
+      'google',
+      'SpreadsheetApp','DriveApp','DocumentApp','SlidesApp','GmailApp','CalendarApp','FormApp',
+      'ScriptApp','PropertiesService','UrlFetchApp','LockService','CacheService','Session','Utilities','Logger','Browser',
+      'HtmlService','ContentService','MimeType'
+    ]);
+    return gasBuiltins.has(r);
+  }
+
+  function discoverSymbolsInTest(testNode, localsSet) {
+    const seen = new Set();
+    const locals = localsSet || new Set();
+    function walk(n) {
+      if (!n || typeof n !== 'object') return;
+      const node = n.type === 'ChainExpression' ? n.expression : n;
+      if (!node || typeof node !== 'object') return;
+      if (Array.isArray(node)) { node.forEach(walk); return; }
+
+      if (node.type === 'UnaryExpression' && node.operator === 'typeof') {
+        const p = objectPathFromNode(node.argument);
+        if (p) {
+          const root = p.split('.')[0];
+          if (!locals.has(root) && !seen.has(p)) { seen.add(p); addDiscoveredSymbolPath(p); }
+        }
+        walk(node.argument);
+        return;
+      }
+      if (node.type === 'Identifier') {
+        if (!locals.has(node.name) && !seen.has(node.name)) { seen.add(node.name); addDiscoveredSymbolPath(node.name); }
+        return;
+      }
+      if (node.type === 'MemberExpression') {
+        const p = objectPathFromNode(node);
+        if (p) {
+          const root = p.split('.')[0];
+          if (!locals.has(root) && !seen.has(p)) { seen.add(p); addDiscoveredSymbolPath(p); }
+        }
+        walk(node.object);
+        return;
+      }
+      Object.keys(node).forEach(k => {
+        if (k === 'loc') return;
+        walk(node[k]);
+      });
+    }
+    walk(testNode);
+  }
+
+  function collectSymbolPathsInTest(testNode, localsSet) {
+    const out = new Set();
+    const locals = localsSet || new Set();
+    function addPath(p) {
+      if (!p) return;
+      const parts = String(p).split('.').filter(Boolean);
+      for (let i = 1; i <= parts.length; i++) out.add(parts.slice(0, i).join('.'));
+    }
+    function walk(n) {
+      if (!n || typeof n !== 'object') return;
+      const node = n.type === 'ChainExpression' ? n.expression : n;
+      if (!node || typeof node !== 'object') return;
+      if (Array.isArray(node)) { node.forEach(walk); return; }
+      if (node.type === 'UnaryExpression' && node.operator === 'typeof') {
+        const p = objectPathFromNode(node.argument);
+        if (p) {
+          const root = p.split('.')[0];
+          if (!locals.has(root)) addPath(p);
+        }
+        walk(node.argument);
+        return;
+      }
+      if (node.type === 'Identifier') {
+        if (!locals.has(node.name)) addPath(node.name);
+        return;
+      }
+      if (node.type === 'MemberExpression') {
+        const p = objectPathFromNode(node);
+        if (p) {
+          const root = p.split('.')[0];
+          if (!locals.has(root)) addPath(p);
+        }
+        walk(node.object);
+        return;
+      }
+      Object.keys(node).forEach(k => {
+        if (k === 'loc') return;
+        walk(node[k]);
+      });
+    }
+    walk(testNode);
+    return out;
+  }
+
+  function collectPatternIds(pattern, out) {
+    if (pattern.type === 'Identifier') out.add(pattern.name);
+    else if (pattern.type === 'ObjectPattern') {
+      pattern.properties.forEach(p => collectPatternIds(p.value || p.argument, out));
+    } else if (pattern.type === 'ArrayPattern') {
+      pattern.elements.forEach(el => { if (el) collectPatternIds(el, out); });
+    } else if (pattern.type === 'AssignmentPattern') {
+      collectPatternIds(pattern.left, out);
+    }
+  }
+
+  function handleAssignment(node, current) {
+    const left = node.left;
+    if (left.type === 'Identifier') {
+      const name = left.name;
+      if (!current.locals.has(name)) current.assignments.globals.push(name);
+    } else if (left.type === 'MemberExpression' && !left.computed && left.property.type === 'Identifier') {
+      const obj = exprToString(left.object);
+      const prop = left.property.name;
+      current.assignments.props.push({ object: obj, property: prop });
+    }
+  }
+
+  function exprToString(expr) {
+    if (!expr) return '<expr>';
+    if (expr.type === 'Identifier') return expr.name;
+    if (expr.type === 'ThisExpression') return 'this';
+    if (expr.type === 'MemberExpression' && !expr.computed && expr.property.type === 'Identifier') {
+      return exprToString(expr.object) + '.' + expr.property.name;
+    }
+    return '<expr>';
+  }
+
+  const SHEET_WRITE_METHODS = new Set([
+    'setValue','setValues','appendRow','insertRow','insertRows','deleteRow','deleteRows',
+    'copyTo','clear','clearContent','clearContents','clearFormats','setBackground',
+    'setBackgrounds','setFormula','setFormulas','setNumberFormat','setNumberFormats',
+    'setNote','setNotes','setRichTextValue','setRichTextValues'
+  ]);
+
+  function calleeChainParts(node) {
+    const parts = [];
+    function walk(n) {
+      if (!n) return;
+      const cur = n.type === 'ChainExpression' ? n.expression : n;
+      if (!cur) return;
+      if (cur.type === 'CallExpression') return walk(cur.callee);
+      if (cur.type === 'MemberExpression') {
+        if (cur.property && cur.property.type === 'Identifier' && !cur.computed) parts.push(cur.property.name);
+        else return;
+        return walk(cur.object);
+      }
+      if (cur.type === 'Identifier') {
+        parts.push(cur.name);
+      }
+    }
+    walk(node);
+    return parts.reverse();
+  }
+
+  function handleCallWithBranch(node, current, branchCtx) {
+    const callee = node.callee;
+    const branchId = branchCtx && branchCtx.id;
+    const branchVal = branchCtx && branchCtx.val;
+    const callLine = node.loc && node.loc.start ? node.loc.start.line : null;
+
+    // Spreadsheet writes
+    const chain = callee.type === 'MemberExpression' ? memberChain(callee) : '';
+    const propName = callee.type === 'MemberExpression' && callee.property.type === 'Identifier'
+      ? callee.property.name : '';
+    if (propName && SHEET_WRITE_METHODS.has(propName)) {
+      current.sheetWrites.push({ method: propName, chain });
+    }
+
+    // google.script.run chains: ignore handler configuration calls and treat the final method call
+    // as a normal edge to the server method name.
+    const parts = calleeChainParts(callee);
+    if (parts.length >= 4 && parts[0] === 'google' && parts[1] === 'script' && parts[2] === 'run') {
+      const method = parts[parts.length - 1];
+      if (['withSuccessHandler', 'withFailureHandler', 'withUserObject'].includes(method)) return;
+      // Collect any configured handlers in the chain so we can treat them as reachable.
+      let obj = callee.type === 'MemberExpression' ? callee.object : null;
+      let successHandlerName = null;
+      let failureHandlerName = null;
+      while (obj && obj.type === 'CallExpression') {
+        const innerCallee = obj.callee;
+        if (!innerCallee || innerCallee.type !== 'MemberExpression' || innerCallee.computed) break;
+        const prop = innerCallee.property && innerCallee.property.type === 'Identifier' ? innerCallee.property.name : null;
+        if (prop === 'withSuccessHandler') {
+          const h = obj.arguments && obj.arguments[0] ? obj.arguments[0] : null;
+          if (h && h.type === 'Identifier') successHandlerName = h.name;
+          else if (h && (h.type === 'FunctionExpression' || h.type === 'ArrowFunctionExpression')) {
+            const loc = h.loc && h.loc.start ? h.loc.start : null;
+            successHandlerName = `gsrun:withSuccessHandler@${loc ? loc.line : '?'}:${loc ? loc.column : '?'}`;
+          }
+        }
+        if (prop === 'withFailureHandler') {
+          const h = obj.arguments && obj.arguments[0] ? obj.arguments[0] : null;
+          if (h && h.type === 'Identifier') failureHandlerName = h.name;
+          else if (h && (h.type === 'FunctionExpression' || h.type === 'ArrowFunctionExpression')) {
+            const loc = h.loc && h.loc.start ? h.loc.start : null;
+            failureHandlerName = `gsrun:withFailureHandler@${loc ? loc.line : '?'}:${loc ? loc.column : '?'}`;
+          }
+        }
+        obj = innerCallee.object;
+      }
+      current.calls.add(method);
+      current.callsInfo.push({ name: method, branchId, branchVal, server: true, line: callLine, via: 'google.script.run' });
+      current.callsOrder.push({ name: method, branchId, branchVal, server: true, line: callLine, via: 'google.script.run' });
+      if (successHandlerName) {
+        current.calls.add(successHandlerName);
+        current.callsInfo.push({ name: successHandlerName, branchId, branchVal, server: false, line: callLine, via: 'google.script.run:success' });
+        current.callsOrder.push({ name: successHandlerName, branchId, branchVal, server: false, line: callLine, via: 'google.script.run:success' });
+      }
+      if (failureHandlerName) {
+        current.calls.add(failureHandlerName);
+        current.callsInfo.push({ name: failureHandlerName, branchId, branchVal, server: false, line: callLine, via: 'google.script.run:failure' });
+        current.callsOrder.push({ name: failureHandlerName, branchId, branchVal, server: false, line: callLine, via: 'google.script.run:failure' });
+      }
+      return;
+    }
+
+    if (callee.type === 'Identifier') {
+      current.calls.add(callee.name);
+      current.callsInfo.push({ name: callee.name, branchId, branchVal, line: callLine });
+      current.callsOrder.push({ name: callee.name, branchId, branchVal, line: callLine });
+    } else if (callee.type === 'MemberExpression') {
+      if (callee.property && callee.property.type === 'Identifier') {
+        current.calls.add(callee.property.name);
+        current.callsInfo.push({ name: callee.property.name, branchId, branchVal, line: callLine });
+        current.callsOrder.push({ name: callee.property.name, branchId, branchVal, line: callLine });
+      }
+    }
+  }
+
+  function memberChain(node) {
+    if (node.type !== 'MemberExpression') return '';
+    const left = node.object.type === 'MemberExpression' ? memberChain(node.object) : (node.object.name || '');
+    const right = node.property.type === 'Identifier' ? node.property.name : '';
+    return left + (left ? '.' : '') + right;
+  }
+
+  function isGoogleTypeCheck(test) {
+    if (!test) return false;
+    const isTypeCheck = (n) =>
+      n.type === 'BinaryExpression' &&
+      ['!==', '!=', '===', '=='].includes(n.operator) &&
+      n.left.type === 'UnaryExpression' &&
+      n.left.operator === 'typeof' &&
+      n.left.argument.type === 'Identifier' &&
+      n.left.argument.name === 'google' &&
+      n.right.type === 'Literal' &&
+      String(n.right.value) === 'undefined';
+    const hasRun = (n) => memberChain(n || {}).includes('google.script.run');
+    if (isTypeCheck(test)) return true;
+    if (test.type === 'LogicalExpression') {
+      if (isTypeCheck(test.left) && hasRun(test.right)) return true;
+      if (isTypeCheck(test.right) && hasRun(test.left)) return true;
+    }
+    return false;
+  }
+
+  function triGetSymbol(path, assumptions) {
+    if (!path) return TRI.Unknown;
+    const symbols = assumptions && assumptions.symbols ? assumptions.symbols : {};
+    const parts = String(path).split('.').filter(Boolean);
+    const root = parts[0];
+    // Default platform/builtin roots to defined unless explicitly overridden.
+    if (isPlatformOrBuiltinRoot(root)) {
+      const direct = symbols[String(path)];
+      if (direct) return direct;
+      for (let i = 1; i <= parts.length; i++) {
+        const p = parts.slice(0, i).join('.');
+        if (symbols[p] === TRI.False) return TRI.False;
+      }
+      return TRI.True;
+    }
+    // A false on any prefix implies the whole path is unavailable.
+    for (let i = 1; i <= parts.length; i++) {
+      const p = parts.slice(0, i).join('.');
+      if (symbols[p] === TRI.False) return TRI.False;
+    }
+    const direct = symbols[String(path)];
+    return direct || TRI.Unknown;
+  }
+
+  function triEvalTest(node, assumptions) {
+    const n = node && node.type === 'ChainExpression' ? node.expression : node;
+    if (!n || typeof n !== 'object') return TRI.Unknown;
+    if (n.type === 'Literal') {
+      if (typeof n.value === 'boolean') return n.value ? TRI.True : TRI.False;
+      return TRI.Unknown;
+    }
+    if (n.type === 'Identifier') return triGetSymbol(n.name, assumptions);
+    if (n.type === 'MemberExpression') {
+      const p = objectPathFromNode(n);
+      if (!p) return TRI.Unknown;
+      return triGetSymbol(p, assumptions);
+    }
+    if (n.type === 'UnaryExpression' && n.operator === '!') return triNot(triEvalTest(n.argument, assumptions));
+    if (n.type === 'UnaryExpression' && n.operator === 'typeof') {
+      // Only meaningful inside comparisons; treat as unknown here.
+      return TRI.Unknown;
+    }
+    if (n.type === 'LogicalExpression') {
+      const left = triEvalTest(n.left, assumptions);
+      const right = triEvalTest(n.right, assumptions);
+      if (n.operator === '&&') return triAnd(left, right);
+      if (n.operator === '||') return triOr(left, right);
+      return TRI.Unknown;
+    }
+    if (n.type === 'BinaryExpression' && ['===', '==', '!==', '!='].includes(n.operator)) {
+      const left = n.left && n.left.type === 'UnaryExpression' && n.left.operator === 'typeof' ? n.left : null;
+      const rightLit = n.right && n.right.type === 'Literal' ? n.right : null;
+      const leftLit = n.left && n.left.type === 'Literal' ? n.left : null;
+      const right = n.right && n.right.type === 'UnaryExpression' && n.right.operator === 'typeof' ? n.right : null;
+      const typeofNode = left || right;
+      const litNode = rightLit || leftLit;
+      if (typeofNode && litNode && String(litNode.value) === 'undefined') {
+        const p = objectPathFromNode(typeofNode.argument);
+        const sym = triGetSymbol(p, assumptions);
+        // typeof X === 'undefined'  <=> X is unavailable
+        // typeof X !== 'undefined' <=> X is available
+        const wantUndefined = (n.operator === '===' || n.operator === '==');
+        if (sym === TRI.Unknown) return TRI.Unknown;
+        if (wantUndefined) return sym === TRI.False ? TRI.True : TRI.False;
+        return sym === TRI.True ? TRI.True : TRI.False;
+      }
+      return TRI.Unknown;
+    }
+    return TRI.Unknown;
+  }
+
+  function resolvePredicateTri(branchId, assumptions) {
+    if (!branchId) return TRI.Unknown;
+    const predMap = assumptions && assumptions.predicates ? assumptions.predicates : {};
+    const forced = predMap[branchId];
+    if (forced && forced !== TRI.Unknown) return forced;
+    const meta = branchMeta[branchId];
+    if (!meta || !meta.testAst) return TRI.Unknown;
+    return triEvalTest(meta.testAst, assumptions);
+  }
+
+  function addFunctionRecord(rec) {
+    if (!functionTable.has(rec.name)) functionTable.set(rec.name, { defs: [] });
+    functionTable.get(rec.name).defs.push(rec);
+  }
+
+  function inferredName(node) {
+    if (node.id && node.id.name) return node.id.name;
+    return null;
+  }
+  function inferredNameFromAncestors(ancestors) {
+    // `acorn-walk`'s `ancestor` walker includes the current node as the last
+    // element in `ancestors`, so the actual parent is the second-to-last entry.
+    const parent = ancestors[ancestors.length - 2];
+    if (!parent) return '<anonymous>';
+    if (parent.type === 'VariableDeclarator' && parent.id.type === 'Identifier') return parent.id.name;
+    if (parent.type === 'Property' && parent.key.type === 'Identifier') return parent.key.name;
+    if (parent.type === 'AssignmentExpression' && parent.left.type === 'Identifier') return parent.left.name;
+    return '<anonymous>';
+  }
+
+  function inferGsRunHandlerName(node, ancestors) {
+    if (!node || !ancestors || ancestors.length < 2) return null;
+    const parent = ancestors[ancestors.length - 2];
+    if (!parent || parent.type !== 'CallExpression') return null;
+    const callee = parent.callee;
+    if (!callee || callee.type !== 'MemberExpression' || callee.computed) return null;
+    const prop = callee.property && callee.property.type === 'Identifier' ? callee.property.name : null;
+    if (!prop || !['withSuccessHandler', 'withFailureHandler'].includes(prop)) return null;
+    // Ensure it's chained off google.script.run (possibly through prior handlers)
+    const parts = calleeChainParts(callee);
+    if (!(parts.length >= 4 && parts[0] === 'google' && parts[1] === 'script' && parts[2] === 'run')) return null;
+    const loc = node.loc && node.loc.start ? node.loc.start : null;
+    const line = loc ? loc.line : '?';
+    const col = loc ? loc.column : '?';
+    return `gsrun:${prop}@${line}:${col}`;
+  }
+
+  function isKnownBuiltinRootForBundle(root) {
+    if (!root) return false;
+    const r = String(root);
+    // JS builtins + common host globals (browser + node). GAS services are intentionally NOT treated as builtins.
+    const builtins = new Set([
+      'Array','Object','String','Number','Boolean','Date','Math','JSON','RegExp','Error','Promise','Map','Set','WeakMap','WeakSet',
+      'Symbol','BigInt','Intl','Reflect','Proxy',
+      'console','globalThis','window','document','navigator','location','history','localStorage','sessionStorage',
+      'fetch','XMLHttpRequest','FormData',
+      'setTimeout','setInterval','clearTimeout','clearInterval',
+      'parseInt','parseFloat','isNaN','isFinite',
+      'URL','URLSearchParams',
+      'TextEncoder','TextDecoder',
+    ]);
+    if (builtins.has(r)) return true;
+    if (r === 'this' || r === 'arguments') return true;
+    return false;
+  }
+
+  function inferDepKindFromUses(uses) {
+    const set = uses || new Set();
+    if (set.has('namespace')) return 'namespace';
+    if (set.has('function')) return 'function';
+    if (set.has('string')) return 'string';
+    if (set.has('number')) return 'number';
+    if (set.has('boolean')) return 'boolean';
+    if (set.has('object')) return 'object';
+    return 'unknown';
+  }
+
+  function applyPatches(text, patches) {
+    const arr = (patches || []).slice().filter(p => p && Number.isFinite(p.start) && Number.isFinite(p.end) && p.end >= p.start);
+    arr.sort((a, b) => b.start - a.start);
+    let out = text;
+    arr.forEach(p => {
+      out = out.slice(0, p.start) + (p.content || '') + out.slice(p.end);
+    });
+    return out;
+  }
+
+  function getNodeSource(src, node) {
+    if (!src || !node || typeof node.start !== 'number' || typeof node.end !== 'number') return '';
+    return src.slice(node.start, node.end);
+  }
+
+  function collectPatternIdsInto(node, outSet) {
+    if (!node || !outSet) return;
+    const n = node.type === 'ChainExpression' ? node.expression : node;
+    if (!n) return;
+    if (n.type === 'Identifier') { outSet.add(n.name); return; }
+    if (n.type === 'RestElement') { collectPatternIdsInto(n.argument, outSet); return; }
+    if (n.type === 'AssignmentPattern') { collectPatternIdsInto(n.left, outSet); return; }
+    if (n.type === 'ArrayPattern') { (n.elements || []).forEach(e => collectPatternIdsInto(e, outSet)); return; }
+    if (n.type === 'ObjectPattern') {
+      (n.properties || []).forEach(p => {
+        if (!p) return;
+        if (p.type === 'Property') collectPatternIdsInto(p.value, outSet);
+        if (p.type === 'RestElement') collectPatternIdsInto(p.argument, outSet);
+      });
+      return;
+    }
+  }
+
+  function collectFunctionLocalsQuick(fnNode) {
+    const locals = new Set();
+    if (!fnNode) return locals;
+    (fnNode.params || []).forEach(p => collectPatternIdsInto(p, locals));
+    if (fnNode.type === 'FunctionDeclaration' && fnNode.id && fnNode.id.type === 'Identifier') locals.add(fnNode.id.name);
+    const body = fnNode.body && fnNode.body.type === 'BlockStatement' ? fnNode.body : null;
+    if (!body || !WALK) return locals;
+    WALK.recursive(body, null, {
+      FunctionDeclaration(node) {
+        if (node.id && node.id.type === 'Identifier') locals.add(node.id.name);
+      },
+      FunctionExpression() {},
+      ArrowFunctionExpression() {},
+      ClassDeclaration(node) {
+        if (node.id && node.id.type === 'Identifier') locals.add(node.id.name);
+      },
+      VariableDeclaration(node, st, c) {
+        (node.declarations || []).forEach(d => collectPatternIdsInto(d.id, locals));
+        WALK.base.VariableDeclaration(node, st, c);
+      },
+      CatchClause(node, st, c) {
+        if (node.param) collectPatternIdsInto(node.param, locals);
+        WALK.base.CatchClause(node, st, c);
+      },
+    }, WALK.base);
+    return locals;
+  }
+
+  function collectExternalDependenciesFromProgram(programNode, src, providedNames) {
+    const deps = new Map(); // name -> Set(uses)
+    const provided = providedNames || new Set();
+    function mark(name, kind) {
+      if (!name) return;
+      if (provided.has(name)) return;
+      if (isKnownBuiltinRootForBundle(name)) return;
+      if (!deps.has(name)) deps.set(name, new Set());
+      if (kind) deps.get(name).add(kind);
+    }
+
+    function visitParamDefaults(paramNode, visible) {
+      if (!paramNode) return;
+      const n = paramNode.type === 'ChainExpression' ? paramNode.expression : paramNode;
+      if (!n || typeof n !== 'object') return;
+      if (n.type === 'AssignmentPattern') {
+        visitNode(n.right, visible);
+        // left side is a declaration pattern, not a reference
+        visitParamDefaults(n.left, visible);
+        return;
+      }
+      if (n.type === 'ArrayPattern') {
+        (n.elements || []).forEach(e => visitParamDefaults(e, visible));
+        return;
+      }
+      if (n.type === 'ObjectPattern') {
+        (n.properties || []).forEach(p => {
+          if (!p) return;
+          if (p.type === 'Property') visitParamDefaults(p.value, visible);
+          if (p.type === 'RestElement') visitParamDefaults(p.argument, visible);
+        });
+        return;
+      }
+      if (n.type === 'RestElement') {
+        visitParamDefaults(n.argument, visible);
+        return;
+      }
+      // Identifier and other plain patterns do not contribute defaults.
+    }
+
+    function visitNode(node, visible) {
+      if (!node || typeof node !== 'object') return;
+      const n = node.type === 'ChainExpression' ? node.expression : node;
+      if (!n) return;
+
+      if (Array.isArray(n)) { n.forEach(x => visitNode(x, visible)); return; }
+
+      if (n.type === 'FunctionDeclaration' || n.type === 'FunctionExpression' || n.type === 'ArrowFunctionExpression') {
+        const nextVisible = new Set(visible);
+        const locals = collectFunctionLocalsQuick(n);
+        locals.forEach(x => nextVisible.add(x));
+        // defaults/destructuring in params may reference outer identifiers; param identifiers themselves are declarations
+        (n.params || []).forEach(p => visitParamDefaults(p, visible));
+        if (n.body) visitNode(n.body, nextVisible);
+        return;
+      }
+
+      if (n.type === 'FunctionDeclaration') {
+        if (n.id && n.id.type === 'Identifier') visible.add(n.id.name);
+      }
+      if (n.type === 'ClassDeclaration') {
+        if (n.id && n.id.type === 'Identifier') visible.add(n.id.name);
+      }
+
+      if (n.type === 'VariableDeclaration') {
+        (n.declarations || []).forEach(d => collectPatternIdsInto(d.id, visible));
+        (n.declarations || []).forEach(d => visitNode(d.init, visible));
+        return;
+      }
+
+      if (n.type === 'CatchClause') {
+        const nextVisible = new Set(visible);
+        if (n.param) collectPatternIdsInto(n.param, nextVisible);
+        visitNode(n.body, nextVisible);
+        return;
+      }
+
+      if (n.type === 'ForStatement' || n.type === 'ForInStatement' || n.type === 'ForOfStatement') {
+        const nextVisible = new Set(visible);
+        const left = n.left || n.init;
+        if (left) {
+          if (left.type === 'VariableDeclaration') {
+            (left.declarations || []).forEach(d => collectPatternIdsInto(d.id, nextVisible));
+          } else {
+            // for (x of y): treat x as declared for dependency purposes (over-approx)
+            collectPatternIdsInto(left, nextVisible);
+          }
+        }
+        // Traverse remaining parts with updated visibility
+        if (n.init && n.type === 'ForStatement' && n.init.type !== 'VariableDeclaration') visitNode(n.init, nextVisible);
+        if (n.test) visitNode(n.test, nextVisible);
+        if (n.update) visitNode(n.update, nextVisible);
+        if (n.right) visitNode(n.right, nextVisible);
+        if (n.body) visitNode(n.body, nextVisible);
+        return;
+      }
+
+      if (n.type === 'Identifier') {
+        if (!visible.has(n.name)) mark(n.name, 'value');
+        return;
+      }
+
+      if (n.type === 'MemberExpression') {
+        // obj.prop => obj is a dependency candidate, prop isn't (unless computed)
+        visitNode(n.object, visible);
+        if (n.computed) visitNode(n.property, visible);
+        const root = objectPathFromNode(n)?.split('.')?.[0];
+        if (root && !visible.has(root)) mark(root, 'namespace');
+        return;
+      }
+
+      if (n.type === 'CallExpression') {
+        // callee could be identifier or member expression
+        if (n.callee && n.callee.type === 'Identifier' && !visible.has(n.callee.name)) mark(n.callee.name, 'function');
+        visitNode(n.callee, visible);
+        (n.arguments || []).forEach(a => visitNode(a, visible));
+        return;
+      }
+
+      if (n.type === 'AssignmentExpression') {
+        if (n.left && n.left.type === 'Identifier' && !visible.has(n.left.name)) mark(n.left.name, 'value');
+        visitNode(n.left, visible);
+        visitNode(n.right, visible);
+        return;
+      }
+
+      if (n.type === 'UpdateExpression') {
+        if (n.argument && n.argument.type === 'Identifier' && !visible.has(n.argument.name)) mark(n.argument.name, 'value');
+        visitNode(n.argument, visible);
+        return;
+      }
+
+      if (n.type === 'BinaryExpression') {
+        // basic type inference when comparing to literals
+        const lit = (side) => side && side.type === 'Literal' ? side : null;
+        const id = (side) => side && side.type === 'Identifier' ? side : null;
+        const leftId = id(n.left);
+        const rightId = id(n.right);
+        const leftLit = lit(n.left);
+        const rightLit = lit(n.right);
+        if (leftId && rightLit && !visible.has(leftId.name)) {
+          if (typeof rightLit.value === 'string') mark(leftId.name, 'string');
+          if (typeof rightLit.value === 'number') mark(leftId.name, 'number');
+          if (typeof rightLit.value === 'boolean') mark(leftId.name, 'boolean');
+        }
+        if (rightId && leftLit && !visible.has(rightId.name)) {
+          if (typeof leftLit.value === 'string') mark(rightId.name, 'string');
+          if (typeof leftLit.value === 'number') mark(rightId.name, 'number');
+          if (typeof leftLit.value === 'boolean') mark(rightId.name, 'boolean');
+        }
+      }
+
+      if (n.type === 'Property') {
+        // { key: value } => key isn't a reference unless computed
+        if (n.computed) visitNode(n.key, visible);
+        visitNode(n.value, visible);
+        return;
+      }
+
+      if (n.type === 'VariableDeclarator') {
+        // init may reference outer
+        visitNode(n.init, visible);
+        return;
+      }
+
+      if (n.type === 'Literal') return;
+
+      Object.keys(n).forEach(k => {
+        if (k === 'loc' || k === 'start' || k === 'end') return;
+        visitNode(n[k], visible);
+      });
+    }
+
+    const topVisible = new Set();
+    // include top-level declared names so we don't treat local bundle declarations as deps
+    WALK && WALK.simple(programNode, {
+      FunctionDeclaration(node) {
+        if (node.id && node.id.type === 'Identifier') topVisible.add(node.id.name);
+      },
+      VariableDeclarator(node) {
+        collectPatternIdsInto(node.id, topVisible);
+      },
+      ClassDeclaration(node) {
+        if (node.id && node.id.type === 'Identifier') topVisible.add(node.id.name);
+      }
+    });
+    provided.forEach(x => topVisible.add(x));
+
+    visitNode(programNode, topVisible);
+    return deps;
+  }
+
+  function parseGoogleScriptRunChain(callExpr) {
+    // Returns null or { methodName, argsNodes, successNode, failureNode, fullNode }
+    if (!callExpr || callExpr.type !== 'CallExpression') return null;
+    const callee = callExpr.callee;
+    if (!callee || callee.type !== 'MemberExpression' || callee.computed) return null;
+    const methodProp = callee.property;
+    if (!methodProp || methodProp.type !== 'Identifier') return null;
+    const methodName = methodProp.name;
+    if (!methodName || ['withSuccessHandler', 'withFailureHandler', 'withUserObject'].includes(methodName)) return null;
+
+    let obj = callee.object;
+    let successNode = null;
+    let failureNode = null;
+
+    function isGsRunBase(n) {
+      const parts = calleeChainParts(n);
+      return parts.length >= 3 && parts[0] === 'google' && parts[1] === 'script' && parts[2] === 'run';
+    }
+
+    // Walk chain backwards: (...).withSuccessHandler(fn).withFailureHandler(fn).method(...)
+    while (obj) {
+      if (obj.type === 'MemberExpression') {
+        if (!isGsRunBase(obj)) return null;
+        break;
+      }
+      if (obj.type !== 'CallExpression') return null;
+      const innerCallee = obj.callee;
+      if (!innerCallee || innerCallee.type !== 'MemberExpression' || innerCallee.computed) return null;
+      const prop = innerCallee.property;
+      const name = prop && prop.type === 'Identifier' ? prop.name : null;
+      if (name === 'withSuccessHandler') successNode = obj.arguments && obj.arguments[0] ? obj.arguments[0] : null;
+      if (name === 'withFailureHandler') failureNode = obj.arguments && obj.arguments[0] ? obj.arguments[0] : null;
+      obj = innerCallee.object;
+      if (obj && obj.type === 'MemberExpression' && isGsRunBase(obj)) break;
+    }
+    if (!obj || obj.type !== 'MemberExpression' || !isGsRunBase(obj)) return null;
+    return { methodName, argsNodes: callExpr.arguments || [], successNode, failureNode, fullNode: callExpr };
+  }
+
+  function transformGoogleScriptRunInProgram(src, programNode) {
+    const patches = [];
+    if (!WALK) return { code: src, transformed: false };
+    WALK.ancestor(programNode, {
+      CallExpression(node, ancestors) {
+        const info = parseGoogleScriptRunChain(node);
+        if (!info) return;
+        const parent = ancestors[ancestors.length - 2];
+        const methodArgs = info.argsNodes.map(a => getNodeSource(src, a)).join(', ');
+        const successSrc = info.successNode ? getNodeSource(src, info.successNode) : null;
+        const failureSrc = info.failureNode ? getNodeSource(src, info.failureNode) : null;
+        const callSrc = `${info.methodName}(${methodArgs})`;
+
+        function tryCatchStmt() {
+          const successLine = successSrc ? `\n  (${successSrc})(__res);` : '';
+          const failLine = failureSrc ? `\n  (${failureSrc})(e);` : '\n  throw e;';
+          return `try {\n  const __res = ${callSrc};${successLine}\n} catch (e) {${failLine}\n}`;
+        }
+        function iifeExpr() {
+          const successLine = successSrc ? `\n    (${successSrc})(__res);` : '';
+          const failLine = failureSrc ? `\n    (${failureSrc})(e);\n    return undefined;` : '\n    throw e;';
+          return `(() => {\n  try {\n    const __res = ${callSrc};${successLine}\n    return __res;\n  } catch (e) {${failLine}\n  }\n})()`;
+        }
+
+        const replacement = parent && parent.type === 'ExpressionStatement' ? tryCatchStmt() : iifeExpr();
+        patches.push({ start: parent && parent.type === 'ExpressionStatement' ? parent.start : node.start, end: parent && parent.type === 'ExpressionStatement' ? parent.end : node.end, content: replacement });
+      }
+    });
+    const out = applyPatches(src, patches);
+    return { code: out, transformed: patches.length > 0 };
+  }
+
+  function wrapIfTestsWithBranchHelper(src, programNode, defFile, defName) {
+    const patches = [];
+    if (!WALK) return { code: src, transformed: false };
+    const idsForFn = Object.entries(branchMeta || {})
+      .filter(([, meta]) => meta && meta.file === defFile && meta.funcName === defName && meta.testSource)
+      .map(([id, meta]) => ({ id, testSource: meta.testSource }))
+      .sort((a, b) => (branchMeta[a.id]?.startOffset ?? 0) - (branchMeta[b.id]?.startOffset ?? 0));
+    const used = new Set();
+
+    function matchIdByTestSource(testSource) {
+      if (!testSource) return null;
+      const norm = testSource.replace(/\s+/g, ' ').trim();
+      const found = idsForFn.find(x => !used.has(x.id) && x.testSource && x.testSource.replace(/\s+/g, ' ').trim() === norm);
+      if (found) { used.add(found.id); return found.id; }
+      // fallback: allow duplicates by cycling (still stable per occurrence)
+      const any = idsForFn.find(x => x.testSource && x.testSource.replace(/\s+/g, ' ').trim() === norm);
+      return any ? any.id : null;
+    }
+
+    WALK.ancestor(programNode, {
+      IfStatement(node, ancestors) {
+        const test = node.test;
+        if (!test || typeof test.start !== 'number' || typeof test.end !== 'number') return;
+        const testSrc = getNodeSource(src, test);
+        const id = matchIdByTestSource(testSrc);
+        if (!id) return;
+        const replacement = `__branch(${JSON.stringify(id)}, (${testSrc}))`;
+        patches.push({ start: test.start, end: test.end, content: replacement });
+      }
+    });
+    const out = applyPatches(src, patches);
+    return { code: out, transformed: patches.length > 0 };
+  }
+
+  function buildFunctionSnippet(def) {
+    const fileObj = fileStore.find(f => f.name === def.file);
+    if (!fileObj || !def || !def.node) return { code: '', name: def?.name || '', file: def?.file || '' };
+    const full = fileObj.parseText || fileObj.text;
+    const node = def.node;
+    if (node.type === 'FunctionDeclaration' && def.loc) {
+      return { code: extractFunctionBlock(full, def.loc) || '', name: def.name, file: def.file };
+    }
+    const safeName = sanitizeBundleIdentifier(def.name || '<anonymous>');
+    // Normalize non-declarations to a named function declaration so the bundle is self-contained.
+    const exprSrc = getNodeSource(full, node);
+    if (exprSrc && exprSrc.trim()) {
+      return { code: `function ${safeName}(...args) { return (${exprSrc}).apply(null, args); }`, name: def.name, file: def.file };
+    }
+    const params = (node.params || []).map(p => getNodeSource(full, p)).join(', ');
+    let bodySrc = '';
+    if (node.body && node.body.type === 'BlockStatement') {
+      bodySrc = getNodeSource(full, node.body);
+    } else if (node.body) {
+      bodySrc = `{ return ${getNodeSource(full, node.body)}; }`;
+    } else {
+      bodySrc = `{}`;
+    }
+    return { code: `function ${safeName}(${params}) ${bodySrc}`, name: def.name, file: def.file };
+  }
+
+  function sanitizeBundleIdentifier(name) {
+    const raw = String(name || '');
+    if (/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(raw)) return raw;
+    const cleaned = raw.replace(/[^A-Za-z0-9_$]/g, '_');
+    return /^[A-Za-z_$]/.test(cleaned) ? cleaned : `_${cleaned}`;
+  }
+
+  function generateLocalBundleForSelectedPath() {
+    const pathObj = (currentChains && currentChains.length) ? (currentChains[selectedPathIdx] || currentChains[0]) : null;
+    if (!pathObj) throw new Error('No selected path; run Analyze first.');
+    const chain = Array.isArray(pathObj.chain) ? pathObj.chain : [];
+    const entry = chain.find(n => functionTable.has(n));
+    if (!entry) throw new Error('No entry function found in selected path.');
+    const decisions = pathObj.decisions || {};
+
+    // Collect reachable functions using branch decisions (deterministic call graph).
+    const reachable = new Set();
+    const stack = [entry];
+    const seen = new Set();
+    while (stack.length) {
+      const fn = stack.pop();
+      if (!fn || seen.has(fn)) continue;
+      seen.add(fn);
+      if (!functionTable.has(fn)) continue;
+      reachable.add(fn);
+      const defs = functionTable.get(fn)?.defs || [];
+      defs.forEach(d => {
+        const calls = d.callsOrder && d.callsOrder.length ? d.callsOrder : Array.from(d.calls || []);
+        calls.forEach(ci => {
+          const info = typeof ci === 'string' ? { name: ci } : (ci || {});
+          if (!info.name) return;
+          if (info.branchId && (info.branchId in decisions) && !!decisions[info.branchId] !== !!info.branchVal) return;
+          const next = info.server ? normalizeServerName(info.name) : info.name;
+          if (functionTable.has(next)) stack.push(next);
+        });
+      });
+    }
+
+    const functionSnippets = [];
+    reachable.forEach(name => {
+      const def = functionTable.get(name)?.defs?.[0];
+      if (!def) return;
+      let { code } = buildFunctionSnippet(def);
+      const ast = tryParseJs(code, `bundle:${def.file}:${def.name}`, true);
+      if (ast) {
+        const wrapped = wrapIfTestsWithBranchHelper(code, ast, def.file, def.name);
+        code = wrapped.code;
+      }
+      const ast2 = tryParseJs(code, `bundle2:${def.file}:${def.name}`, true);
+      if (ast2) {
+        const transformed = transformGoogleScriptRunInProgram(code, ast2);
+        code = transformed.code;
+      }
+      functionSnippets.push({ name, file: def.file, code });
+    });
+
+    const providedNames = new Set([...reachable, '__deps', '__decisions', '__branch', '__entryArgs']);
+    const depUses = new Map(); // name -> Set(uses)
+    functionSnippets.forEach(snip => {
+      const ast = tryParseJs(snip.code, `deps:${snip.file}:${snip.name}`, true);
+      if (!ast) return;
+      const deps = collectExternalDependenciesFromProgram(ast, snip.code, providedNames);
+      deps.forEach((uses, name) => {
+        if (!depUses.has(name)) depUses.set(name, new Set());
+        uses.forEach(u => depUses.get(name).add(u));
+      });
+    });
+
+	    const contract = {};
+	    depUses.forEach((uses, name) => {
+	      contract[name] = inferDepKindFromUses(uses);
+	    });
+	    contract.__entryArgs = 'array';
+
+    const depsCheck = Object.keys(contract)
+      .map(k => `  if (!Object.prototype.hasOwnProperty.call(__deps, ${JSON.stringify(k)})) __missing.push(${JSON.stringify(k)});`)
+      .join('\n');
+
+    const depKeys = Object.keys(contract).filter(k => k !== '__entryArgs');
+    const safeDepKeys = depKeys.filter(k => /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(k));
+    const depGlobalDecls = safeDepKeys.map(k => `let ${k};`).join('\n');
+    const depAssignments = safeDepKeys.map(k => `  ${k} = __deps[${JSON.stringify(k)}];`).join('\n');
+
+	    const bundle = [
+	      `'use strict';`,
+	      `// Auto-generated local execution bundle`,
+	      `// Entry: ${entry}`,
+	      `const __contract = ${JSON.stringify(contract, null, 2)};`,
+	      `const __decisions = ${JSON.stringify(decisions, null, 2)};`,
+	      depGlobalDecls,
+	      `const __logs = [];`,
+	      `let __printed = 0;`,
+	      `let __suppressed = 0;`,
+	      `const __realConsole = (typeof globalThis !== 'undefined' && globalThis.console) ? globalThis.console : null;`,
+	      `function __fmt(v) {`,
+	      `  if (v instanceof Error) return v.stack || v.message || String(v);`,
+	      `  if (typeof v === 'string') return v;`,
+	      `  try { return JSON.stringify(v); } catch (e) { return String(v); }`,
+	      `}`,
+	      `function __cap(level, args) {`,
+	      `  const msg = args.map(__fmt).join(' ');`,
+	      `  if (__logs.length < 20) __logs.push({ level, message: msg });`,
+	      `  else __suppressed += 1;`,
+	      `  if (__printed < 20 && __realConsole && typeof __realConsole[level] === 'function') {`,
+	      `    __printed += 1;`,
+	      `    __realConsole[level].apply(__realConsole, args);`,
+	      `  }`,
+	      `}`,
+	      `const console = {`,
+	      `  log: (...args) => __cap('log', args),`,
+	      `  warn: (...args) => __cap('warn', args),`,
+	      `  error: (...args) => __cap('error', args),`,
+	      `  info: (...args) => __cap('info', args),`,
+	      `};`,
+	      `function __mockNamespace(namePath) {`,
+	      `  const fn = function() {};`,
+	      `  return new Proxy(fn, {`,
+	      `    get(_t, prop) {`,
+	      `      if (prop === '__isMock') return true;`,
+	      `      if (prop === 'toJSON') return () => ({ __mock: namePath });`,
+	      `      if (prop === 'toString') return () => namePath;`,
+	      `      if (prop === Symbol.toPrimitive) return () => namePath;`,
+	      `      const next = namePath + '.' + String(prop);`,
+	      `      return __mockNamespace(next);`,
+	      `    },`,
+	      `    apply(_t, _thisArg, args) {`,
+	      `      const call = namePath + '(' + (args || []).map(__fmt).join(', ') + ')';`,
+	      `      console.log(call);`,
+	      `      return __mockNamespace(call);`,
+	      `    },`,
+	      `  });`,
+	      `}`,
+	      `function __branch(id, expr) {`,
+	      `  if (Object.prototype.hasOwnProperty.call(__decisions, id)) return !!__decisions[id];`,
+	      `  return !!expr;`,
+	      `}`,
+	      ``,
+	      `function __run(__deps) {`,
+	      `  if (!__deps || typeof __deps !== 'object') throw new Error('Missing __deps object');`,
+	      `  const __missing = [];`,
+	      depsCheck,
+	      `  // Require concrete values for non-namespace deps; namespaces may be auto-mocked.`,
+	      `  Object.keys(__contract).forEach((k) => {`,
+	      `    if (k === '__entryArgs') return;`,
+	      `    const kind = __contract[k];`,
+	      `    if (!Object.prototype.hasOwnProperty.call(__deps, k)) return;`,
+	      `    const v = __deps[k];`,
+	      `    if (kind !== 'namespace' && (v === null || typeof v === 'undefined')) __missing.push(k);`,
+	      `  });`,
+	      `  if (__missing.length) throw new Error('Missing dependencies: ' + Array.from(new Set(__missing)).join(', '));`,
+	      `  // Auto-mock namespaces (including google / Apps Script services) when left null or "__mock__".`,
+	      `  Object.keys(__contract).forEach((k) => {`,
+	      `    if (k === '__entryArgs') return;`,
+	      `    if (__contract[k] !== 'namespace') return;`,
+	      `    if (!Object.prototype.hasOwnProperty.call(__deps, k) || __deps[k] === null || __deps[k] === '__mock__') {`,
+	      `      __deps[k] = __mockNamespace(k);`,
+	      `    }`,
+	      `  });`,
+	      depAssignments || '',
+	      `  const __entryArgs = __deps.__entryArgs;`,
+	      `  if (!Array.isArray(__entryArgs)) throw new Error('Missing __deps.__entryArgs (array)');`,
+	      `  try {`,
+	      `    const __result = ${entry}.apply(null, __entryArgs);`,
+	      `    return { result: __result, logs: __logs.slice(), suppressed: __suppressed };`,
+	      `  } catch (e) {`,
+	      `    console.error(e);`,
+	      `    return { error: String(e && e.message ? e.message : e), logs: __logs.slice(), suppressed: __suppressed };`,
+	      `  }`,
+	      `}`,
+	      ``,
+	      functionSnippets.map(s => s.code).join('\n\n'),
+	      ``,
+	      `// Usage: __run({ ...deps, __entryArgs: [] })`,
+      `if (typeof module !== 'undefined' && module.exports) module.exports = { __run };`,
+      `else if (typeof window !== 'undefined') window.__run = __run;`,
+      ``,
+    ].filter(Boolean).join('\n');
+
+    return { entry, reachable: Array.from(reachable), contract, bundle };
+  }
+
+  function analyze() {
+    selectedPathIdx = 0;
+    drilldownContext = null;
+    if (!WALK) {
+      status('acorn-walk failed to load; check network/CDN and reload the page.');
+      return;
+    }
+    const id = searchIdEl.value.trim();
+    if (!id) { status('Enter an element id.'); return; }
+    if (!fileStore.length) { status('Load files first.'); return; }
+
+    buildIndexes();
+
+    const matches = findElementMatches(id);
+    cachedMatches = matches;
+    if (matches.length > 1) {
+      renderHtmlChooser(matches);
+    } else {
+      renderHtmlChooser([]);
+    }
+    const chosenMatch = selectMatch(matches);
+    if (!chosenMatch) {
+      status('No element found for id "' + id + '".');
+      renderCallChains([]);
+      renderMutations([]);
+      renderChainMethods([]);
+      renderOrderedDrilldown();
+      return;
+    }
+    const startFunctions = new Set();
+
+    codeSnippets = [];
+    chosenMatch.list.forEach(m => {
+      if (m.onclick) {
+        const func = firstFuncNameFromCode(m.onclick);
+        if (func) startFunctions.add(func);
+      }
+      // html snippet
+      addSnippet({
+        label: `HTML id="${id}" in ${m.file}`,
+        file: m.file,
+        line: findLineOfText(m.text, id),
+        code: extractContext(m.text, id)
+      });
+    });
+
+    // find addEventListener handlers
+    const linkedJs = findLinkedJsFromHtml(chosenMatch.text);
+    const listenersPrimary = findListenersForId(id, linkedJs.length ? linkedJs : null);
+    listenersPrimary.forEach(fn => startFunctions.add(fn));
+
+    if (!startFunctions.size) {
+      status('No handlers found for id "' + id + '". Showing empty results.');
+      renderPathList([]);
+      renderCurrentPathSummary([]);
+      renderMutations([]);
+      renderOrderedDrilldown();
+      return;
+    }
+
+    startFunctionList = Array.from(startFunctions);
+    selectedPathIdx = 0;
+    computeAnalysisRelevantAssumptions();
+    renderAssumptionsPanel();
+    recomputeGlobalPaths();
+    status('Analysis complete for id "' + id + '".');
+  }
+
+  function recomputeGlobalPaths() {
+    if (!startFunctionList || !startFunctionList.length) return;
+    computeAnalysisRelevantAssumptions();
+    const maxVisitsPerFunction = Number.isFinite(+maxDepthPerFnEl?.value) ? +maxDepthPerFnEl.value : 4;
+    const maxPaths = Number.isFinite(+maxPathsEl?.value) ? +maxPathsEl.value : 5000;
+    const assumptions = (pathExplorerMode === 'assumptions') ? globalAssumptions : null;
+    currentChains = buildCallChains(startFunctionList, { assumptions, maxVisitsPerFunction, maxPaths });
+    if (!currentChains.length && startFunctionList.length) {
+      currentChains = startFunctionList.map(fn => ({ chain: [fn], decisions: {} }));
+    }
+    if (selectedPathIdx >= currentChains.length) selectedPathIdx = 0;
+    renderPathList(currentChains);
+    renderCurrentPathSummary(currentChains);
+    renderFunctionsForPath(currentChains, selectedPathIdx);
+    renderDrilldown(currentChains, selectedPathIdx);
+    renderOrderedDrilldown();
+  }
+
+  function findElementMatches(id) {
+    const matches = [];
+    const parser = new DOMParser();
+    fileStore.filter(f => f.type === 'html').forEach(file => {
+      const doc = parser.parseFromString(file.text, 'text/html');
+      const el = doc.getElementById(id);
+      if (el) {
+        matches.push({
+          file: file.name,
+          tag: el.tagName.toLowerCase(),
+          onclick: el.getAttribute('onclick'),
+          text: file.text
+        });
+      }
+    });
+    return matches;
+  }
+
+  function firstFuncNameFromCode(code) {
+    if (!code) return null;
+    const m = code.match(/([A-Za-z_$][\w$]*)\s*\(/);
+    return m ? m[1] : null;
+  }
+
+  function renderHtmlChooser(matches) {
+    htmlChooserEl.innerHTML = '';
+    if (!matches || matches.length <= 1) return;
+    const label = document.createElement('div');
+    label.textContent = 'Multiple HTML matches found. Choose one:';
+    label.style.color = 'var(--muted)';
+    label.style.fontSize = '12px';
+    htmlChooserEl.appendChild(label);
+    const select = document.createElement('select');
+    select.style.width = '100%';
+    select.style.marginTop = '6px';
+    matches.forEach((m) => {
+      const opt = document.createElement('option');
+      opt.value = m.file;
+      opt.textContent = `${m.file} (${m.tag})`;
+      select.appendChild(opt);
+    });
+    select.value = selectedHtmlPath || matches[0].file;
+    select.addEventListener('change', () => {
+      selectedHtmlPath = select.value;
+      selectedPathIdx = 0;
+      drilldownContext = null;
+      drillExpanded = {};
+      analyze();
+    });
+    htmlChooserEl.appendChild(select);
+  }
+
+  function selectMatch(matches) {
+    if (!matches.length) return null;
+    if (matches.length === 1) {
+      selectedHtmlPath = matches[0].file;
+      return { list: matches, text: matches[0].text };
+    }
+    const chosen = matches.find(m => m.file === selectedHtmlPath) || matches[0];
+    selectedHtmlPath = chosen.file;
+    return { list: matches.filter(m => m.file === chosen.file), text: chosen.text };
+  }
+
+  function triSelect(labelText, currentValue, onChange) {
+    const wrap = document.createElement('div');
+    wrap.style.display = 'flex';
+    wrap.style.alignItems = 'center';
+    wrap.style.justifyContent = 'space-between';
+    wrap.style.gap = '10px';
+    wrap.style.padding = '4px 0';
+    const label = document.createElement('div');
+    label.textContent = labelText;
+    label.style.color = '#d5ddff';
+    label.style.flex = '1';
+    label.style.fontSize = '12px';
+    const select = document.createElement('select');
+    select.style.background = '#0f1730';
+    select.style.color = 'var(--text)';
+    select.style.border = '1px solid #2c3b68';
+    select.style.borderRadius = '8px';
+    select.style.padding = '4px 6px';
+    [{ v: TRI.Unknown, t: 'Unknown' }, { v: TRI.True, t: 'True' }, { v: TRI.False, t: 'False' }].forEach(o => {
+      const opt = document.createElement('option');
+      opt.value = o.v;
+      opt.textContent = o.t;
+      select.appendChild(opt);
+    });
+    select.value = currentValue || TRI.Unknown;
+    select.addEventListener('change', () => onChange(select.value));
+    wrap.appendChild(label);
+    wrap.appendChild(select);
+    return wrap;
+  }
+
+  function renderAssumptionsPanel() {
+    if (!assumptionsPanelEl) return;
+    if (pathExplorerModeEl) pathExplorerModeEl.value = pathExplorerMode;
+    if (showPlatformSymbolsEl) showPlatformSymbolsEl.checked = !!showPlatformSymbols;
+
+    const symbols = Array.from(analysisRelevantSymbolPaths || [])
+      .filter(p => showPlatformSymbols || !isPlatformOrBuiltinRoot(String(p).split('.')[0]))
+      .sort((a, b) => a.localeCompare(b));
+    if (!symbols.length) {
+      symbolAssumptionsEl.classList.add('empty');
+      symbolAssumptionsEl.textContent = 'No global symbols discovered yet.';
+    } else {
+      symbolAssumptionsEl.classList.remove('empty');
+      symbolAssumptionsEl.innerHTML = '';
+      symbols.forEach(path => {
+        const cur = globalAssumptions.symbols[path] || TRI.Unknown;
+        const row = triSelect(path, cur, (v) => {
+          globalAssumptions.symbols[path] = v;
+          if (pathExplorerMode === 'assumptions') recomputeGlobalPaths();
+          renderOrderedDrilldown();
+        });
+        symbolAssumptionsEl.appendChild(row);
+      });
+    }
+
+    const predicates = (branchRegistry || [])
+      .filter(b => analysisReachableBranchIds.has(b.id))
+      .slice()
+      .sort((a, b) => String(a.id).localeCompare(String(b.id)));
+    if (!predicates.length) {
+      predicateOverridesEl.classList.add('empty');
+      predicateOverridesEl.textContent = 'No predicates discovered yet.';
+    } else {
+      predicateOverridesEl.classList.remove('empty');
+      predicateOverridesEl.innerHTML = '';
+      predicates.forEach(p => {
+        const id = p.id;
+        const name = globalAssumptions.predicateNames[id] || (branchMeta[id]?.label || p.label || id);
+        const outer = document.createElement('div');
+        outer.style.borderBottom = '1px solid rgba(44,59,104,0.4)';
+        outer.style.padding = '6px 0';
+        const top = document.createElement('div');
+        top.style.display = 'flex';
+        top.style.gap = '8px';
+        top.style.alignItems = 'center';
+        const input = document.createElement('input');
+        input.value = name;
+        input.placeholder = 'Predicate name';
+        input.style.flex = '1';
+        input.style.background = '#0f1730';
+        input.style.color = 'var(--text)';
+        input.style.border = '1px solid #2c3b68';
+        input.style.borderRadius = '8px';
+        input.style.padding = '6px';
+        input.addEventListener('change', () => {
+          globalAssumptions.predicateNames[id] = input.value.trim();
+        });
+        top.appendChild(input);
+        outer.appendChild(top);
+        const cur = globalAssumptions.predicates[id] || TRI.Unknown;
+        outer.appendChild(triSelect(id, cur, (v) => {
+          globalAssumptions.predicates[id] = v;
+          if (pathExplorerMode === 'assumptions') recomputeGlobalPaths();
+          renderOrderedDrilldown();
+        }));
+        predicateOverridesEl.appendChild(outer);
+      });
+    }
+  }
+
+  function computeAnalysisRelevantAssumptions() {
+    analysisReachableFns = new Set();
+    analysisReachableBranchIds = new Set();
+    analysisRelevantSymbolPaths = new Set();
+    if (!startFunctionList || !startFunctionList.length) return;
+
+    // Relevance should be derived from the enumerated paths (all paths under current depth/path caps),
+    // not from "all functions declared in the file".
+    const maxVisitsPerFunction = Number.isFinite(+maxDepthPerFnEl?.value) ? +maxDepthPerFnEl.value : 4;
+    const maxPaths = Number.isFinite(+maxPathsEl?.value) ? +maxPathsEl.value : 5000;
+    const discoveryChains = buildCallChains(startFunctionList, { assumptions: null, maxVisitsPerFunction, maxPaths });
+
+    const branchIds = new Set();
+    discoveryChains.forEach(p => {
+      Object.keys(p.decisions || {}).forEach(id => {
+        if (String(id).startsWith('gsrun:')) return;
+        branchIds.add(id);
+      });
+      (p.chain || []).forEach(fn => { if (functionTable.has(fn)) analysisReachableFns.add(fn); });
+    });
+    analysisReachableBranchIds = branchIds;
+
+    const symbols = new Set();
+    branchIds.forEach(id => {
+      const meta = branchMeta[id];
+      if (!meta || !meta.testAst) return;
+      const locals = new Set(meta.locals || []);
+      const found = collectSymbolPathsInTest(meta.testAst, locals);
+      found.forEach(p => symbols.add(p));
+    });
+    analysisRelevantSymbolPaths = symbols;
+  }
+
+  function findLinkedJsFromHtml(htmlText) {
+    if (!htmlText) return [];
+    const regex = /createHtmlOutputFromFile\(['"]([^'"\n]+)['"]\)\.getContent\(\)/g;
+    const out = [];
+    let m;
+    while ((m = regex.exec(htmlText))) {
+      out.push(m[1]);
+    }
+    return out;
+  }
+
+  function tryParseJs(text, fileName, withLocations) {
+    const opts = { ecmaVersion: 'latest', sourceType: 'script' };
+    if (withLocations) opts.locations = true;
+    const candidates = [];
+    candidates.push(normalizeJs(text));
+    const scripts = Array.from(text.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi)).map(m => m[1]).join('\n');
+    if (scripts) candidates.push(normalizeJs(scripts));
+    for (const candidate of candidates) {
+      if (!candidate.trim()) continue;
+      try {
+        const ast = acorn.parse(candidate, opts);
+        ast.__src = candidate;
+        return ast;
+      } catch (e) {
+        continue;
+      }
+    }
+    console.warn('Parse failed for', fileName);
+    return null;
+  }
+
+  function addSnippet(entry) {
+    if (!entry || !entry.code) return;
+    codeSnippets.push(entry);
+  }
+
+  function extractLines(text, line, pad = 1) {
+    if (!line) return '';
+    const lines = text.split(/\r?\n/);
+    const idx = line - 1;
+    const start = Math.max(0, idx - pad);
+    const end = Math.min(lines.length, idx + pad + 1);
+    return lines.slice(start, end).join('\\n');
+  }
+
+  function extractFunctionBlock(text, loc) {
+    if (!loc || !loc.start || !loc.end) return '';
+    const lines = text.split(/\r?\n/);
+    const start = Math.max(0, loc.start.line - 1);
+    const end = Math.min(lines.length, loc.end.line);
+    return lines.slice(start, end).join('\n');
+  }
+
+  function extractContext(text, needle) {
+    const idx = text.indexOf(needle);
+    if (idx === -1) return '';
+    const start = Math.max(0, idx - 60);
+    const end = Math.min(text.length, idx + needle.length + 60);
+    return text.slice(start, end);
+  }
+
+  function findLineOfText(text, needle) {
+    if (!needle) return null;
+    const idx = text.indexOf(needle);
+    if (idx === -1) return null;
+    return text.slice(0, idx).split(/\\r?\\n/).length;
+  }
+
+  function escapeHtml(str) {
+    return String(str || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  }
+
+  function findListenersForId(id, allowedFiles = null) {
+    const handlers = [];
+    const jsFiles = fileStore.filter(f => f.type === 'js');
+    for (const file of jsFiles) {
+      if (allowedFiles && !allowedFiles.some(n => file.name.endsWith(n))) continue;
+      const ast = tryParseJs(file.text, file.name, true);
+      if (!ast) continue;
+
+      const boundNames = new Set();
+      WALK && WALK.simple(ast, {
+        VariableDeclarator(node) {
+          if (node.init && isElementGetter(node.init, id)) {
+            if (node.id.type === 'Identifier') boundNames.add(node.id.name);
+          }
+        },
+        AssignmentExpression(node) {
+          if (node.right && isElementGetter(node.right, id)) {
+            if (node.left.type === 'Identifier') boundNames.add(node.left.name);
+          }
+        }
+      });
+
+      WALK && WALK.simple(ast, {
+        CallExpression(node) {
+          // getElementById('id').addEventListener('...', handler)
+          if (node.callee.type === 'MemberExpression' &&
+              node.callee.property.name === 'addEventListener' &&
+              node.callee.object.type === 'CallExpression') {
+            const getEl = node.callee.object;
+            if (getEl.callee.type === 'MemberExpression' &&
+                getEl.callee.property.name === 'getElementById' &&
+                getEl.arguments.length &&
+                getStaticString(getEl.arguments[0]) === id) {
+              const handler = node.arguments[1];
+              const name = handlerName(handler);
+              if (name) {
+                handlers.push(name);
+                addSnippet({
+                  label: `addEventListener for #${id}`,
+                  file: file.name,
+                  line: node.loc && node.loc.start.line,
+                  code: extractLines(file.text, node.loc && node.loc.start.line)
+                });
+              }
+            }
+          }
+          // boundVar.addEventListener(...)
+          if (node.callee.type === 'MemberExpression' &&
+              node.callee.property.name === 'addEventListener' &&
+              node.callee.object.type === 'Identifier' &&
+              boundNames.has(node.callee.object.name)) {
+            const handler = node.arguments[1];
+            const name = handlerName(handler);
+            if (name) {
+              handlers.push(name);
+              addSnippet({
+                label: `addEventListener for #${id} via ${node.callee.object.name}`,
+                file: file.name,
+                line: node.loc && node.loc.start.line,
+                code: extractLines(file.text, node.loc && node.loc.start.line)
+              });
+            }
+          }
+        }
+      });
+    }
+    return handlers;
+  }
+
+  function getStaticString(arg) {
+    if (!arg) return null;
+    if (arg.type === 'Literal') return String(arg.value);
+    if (arg.type === 'TemplateLiteral' && arg.expressions.length === 0) {
+      return arg.quasis.map(q => q.value.raw).join('');
+    }
+    return null;
+  }
+
+  function isElementGetter(callNode, id) {
+    if (!callNode || callNode.type !== 'CallExpression') return false;
+    if (!callNode.callee || callNode.arguments.length === 0) return false;
+    const argVal = getStaticString(callNode.arguments[0]);
+    if (!argVal) return false;
+    // document.getElementById('id')
+    if (callNode.callee.type === 'MemberExpression' &&
+        callNode.callee.property.name === 'getElementById' &&
+        argVal === id) return true;
+    // querySelector('#id')
+    if (callNode.callee.type === 'MemberExpression' &&
+        callNode.callee.property.name === 'querySelector' &&
+        argVal === '#' + id) return true;
+    return false;
+  }
+
+  function handlerName(handlerNode) {
+    if (!handlerNode) return null;
+    if (handlerNode.type === 'Identifier') return handlerNode.name;
+    if (handlerNode.type === 'FunctionExpression' || handlerNode.type === 'ArrowFunctionExpression') {
+      // anonymous inline, give synthetic name
+      return '(inline@' + (handlerNode.loc ? handlerNode.loc.start.line : '?') + ')';
+    }
+    return null;
+  }
+
+  function buildCallChains(startFns, opts = {}) {
+    const chains = [];
+    chainMethods = [];
+    if (!startFns || !startFns.length) return [];
+    const assumptions = opts.assumptions || null;
+    const maxVisitsPerFunction = Number.isFinite(+opts.maxVisitsPerFunction) ? +opts.maxVisitsPerFunction : 4;
+    const maxPaths = Number.isFinite(+opts.maxPaths) ? +opts.maxPaths : 5000;
+
+    function dfs(fnName, path, decisions, visits) {
+      if (path.includes(fnName)) {
+        chains.push({ chain: [...path, fnName, '(cycle)'], decisions });
+        return;
+      }
+      const visitCount = (visits[fnName] || 0) + 1;
+      if (visitCount > maxVisitsPerFunction) {
+        chains.push({ chain: [...path, fnName, '(depth limit)'], decisions });
+        return;
+      }
+      const defs = functionTable.get(fnName)?.defs || [];
+      if (!defs.length) {
+        chains.push({ chain: [...path, fnName], decisions });
+        return;
+      }
+      const calls = [];
+      defs.forEach(d => {
+        const source = d.callsOrder && d.callsOrder.length ? d.callsOrder : Array.from(d.calls || []);
+        source.forEach(ci => {
+          const name = typeof ci === 'string' ? ci : ci.name;
+          const bId = ci.branchId;
+          const bVal = ci.branchVal;
+          calls.push({ name, bId, bVal });
+        });
+        chainMethods.push(fnName);
+      });
+      if (!calls.length) {
+        chains.push({ chain: [...path, fnName], decisions });
+        return;
+      }
+      let produced = false;
+      for (const c of calls) {
+        if (chains.length >= maxPaths) break;
+        if (!c.name) continue;
+        const nextDec = Object.assign({}, decisions);
+        if (c.bId) {
+          if (branchMeta[c.bId] && branchMeta[c.bId].ignorePath) {
+            // do not branch paths on ignored conditions
+          } else {
+            const predTri = assumptions ? resolvePredicateTri(c.bId, assumptions) : TRI.Unknown;
+            const predBool = triToBool(predTri);
+            if (predBool !== null && predBool !== c.bVal) continue;
+            if (c.bId in nextDec && nextDec[c.bId] !== c.bVal) {
+              continue;
+            }
+            nextDec[c.bId] = c.bVal;
+          }
+        }
+        if (functionTable.has(c.name)) {
+          produced = true;
+          const nextVisits = Object.assign({}, visits, { [fnName]: visitCount });
+          dfs(c.name, [...path, fnName], nextDec, nextVisits);
+        } else {
+          produced = true;
+          chains.push({ chain: [...path, fnName, c.name], decisions: nextDec });
+        }
+      }
+      if (!produced) chains.push({ chain: [...path, fnName], decisions });
+    }
+    startFns.forEach(fn => dfs(fn, [], {}, {}));
+    if (!chains.length) {
+      startFns.forEach(fn => chains.push({ chain: [fn], decisions: {} }));
+    }
+    // Dedupe identical chain+decisions to avoid explosion from repeated call collection.
+    const seen = new Set();
+    const unique = [];
+    chains.forEach(p => {
+      const key = JSON.stringify(p.chain || []) + '|' + JSON.stringify(p.decisions || {});
+      if (seen.has(key)) return;
+      seen.add(key);
+      unique.push(p);
+    });
+    return unique;
+  }
+
+  function renderPathList(chains) {
+    if (!chains.length) {
+      pathListEl.classList.add('empty');
+      pathListEl.textContent = 'No paths.';
+      return;
+    }
+    pathListEl.classList.remove('empty');
+    pathListEl.innerHTML = '';
+    chains.forEach((pathObj, idx) => {
+      const wrap = document.createElement('div');
+      wrap.style.marginBottom = '10px';
+      wrap.style.border = '1px solid #2c3b68';
+      wrap.style.padding = '8px';
+      wrap.style.borderRadius = '6px';
+      wrap.style.cursor = 'pointer';
+      wrap.style.background = idx === selectedPathIdx ? '#0f1730' : 'transparent';
+      wrap.addEventListener('click', () => {
+        selectedPathIdx = idx;
+        renderPathList(chains);
+        renderCurrentPathSummary(chains);
+        renderFunctionsForPath(chains, idx);
+        renderDrilldown(chains, idx);
+        renderOrderedDrilldown();
+        codeViewerEl.scrollIntoView({ behavior: 'smooth' });
+      });
+      const label = document.createElement('div');
+      label.style.color = '#7ce7ac';
+      const decisions = pathObj.decisions || {};
+      const desc = Object.entries(decisions).map(([id,val]) => {
+        const meta = branchMeta[id] || {};
+        const where = meta.file ? `${meta.file}${meta.line?':'+meta.line:''}` : id;
+        return `${where} => ${val ? 'true' : 'false'}`;
+      }).join(' | ');
+      label.textContent = `Path ${idx + 1}: ${desc || 'no branch decisions'}`;
+      wrap.appendChild(label);
+      const classifications = classifyPathSideEffects(pathObj);
+      const classWrap = document.createElement('div');
+      classWrap.style.margin = '6px 0';
+      classifications.forEach(c => {
+        const chip = document.createElement('span');
+        chip.className = 'chip';
+        chip.textContent = c;
+        if (c === 'No state change') chip.style.background = '#1e294a';
+        if (c === 'Client state change') chip.style.background = '#224a3a';
+        if (c === 'Server/persistent change') chip.style.background = '#4a2a1e';
+        classWrap.appendChild(chip);
+      });
+      wrap.appendChild(classWrap);
+      const pre = document.createElement('pre');
+      pre.style.whiteSpace = 'pre-wrap';
+      pre.style.lineHeight = '1.4';
+      const chain = Array.isArray(pathObj.chain) ? pathObj.chain : [];
+      const foldKey = `g:${idx}:${decisionsKey(pathObj.decisions)}`;
+      const expanded = !!globalPathFoldExpanded[foldKey];
+      const foldedParts = [];
+      for (let i = 0; i < chain.length; i++) {
+        const cur = chain[i];
+        let j = i + 1;
+        while (j < chain.length && chain[j] === cur) j++;
+        const count = j - i;
+        const label = isServerFunction(cur) ? `[SERVER] ${cur}` : cur;
+        foldedParts.push(count > 1 ? `${label} ×${count}` : label);
+        i = j - 1;
+      }
+      const rawParts = chain.map(p => (isServerFunction(p) ? `[SERVER] ${p}` : p));
+      pre.textContent = (expanded ? rawParts : foldedParts).join('\n');
+      wrap.appendChild(pre);
+      if (foldedParts.join('\n') !== rawParts.join('\n')) {
+        const expBtn = document.createElement('button');
+        expBtn.textContent = expanded ? 'Fold' : 'Expand';
+        expBtn.style.marginTop = '6px';
+        expBtn.style.padding = '4px 8px';
+        expBtn.style.borderRadius = '8px';
+        expBtn.style.border = '1px solid #2c3b68';
+        expBtn.style.background = '#182344';
+        expBtn.style.color = '#8fa1c2';
+        expBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          globalPathFoldExpanded[foldKey] = !expanded;
+          renderPathList(chains);
+        });
+        wrap.appendChild(expBtn);
+      }
+      const mutInfos = mutationsSummaryForPath(pathObj);
+      const mutDiv = document.createElement('div');
+      mutDiv.style.color = '#8fa1c2';
+      mutDiv.style.fontSize = '12px';
+      mutDiv.innerHTML = mutInfos.length ? mutInfos.map(m => `${m.name}: G[${m.globals.join(', ')||'None'}] P[${m.props.map(p=>`${p.object}.${p.property}`).join(', ')||'None'}] S[${m.sheets.map(p=>`${p.object}.${p.property}`).join(', ')||'None'}]`).join(' | ') : 'Mutations: None';
+      wrap.appendChild(mutDiv);
+      pathListEl.appendChild(wrap);
+    });
+  }
+
+  function renderCurrentPathSummary(chains) {
+    if (!chains.length) {
+      callChainEl.classList.add('empty');
+      callChainEl.textContent = 'No data.';
+      return;
+    }
+    callChainEl.classList.remove('empty');
+    callChainEl.innerHTML = '';
+    const pathObj = chains[selectedPathIdx] || chains[0];
+    const decisions = pathObj.decisions || {};
+    const desc = Object.entries(decisions).map(([id,val]) => {
+      const meta = branchMeta[id] || {};
+      const where = meta.file ? `${meta.file}${meta.line?':'+meta.line:''}` : id;
+      return `${where} => ${val ? 'true' : 'false'}`;
+    }).join(' | ');
+    const label = document.createElement('div');
+    label.style.color = '#7ce7ac';
+    label.textContent = `Selected Path ${selectedPathIdx + 1}: ${desc || 'no branch decisions'}`;
+    callChainEl.appendChild(label);
+    const mutInfos = renderMutationsForPath(chains, selectedPathIdx);
+    const mutDiv = document.createElement('div');
+    mutDiv.style.color = '#8fa1c2';
+    mutDiv.style.fontSize = '12px';
+    mutDiv.innerHTML = mutInfos.length ? mutInfos.map(m => `${m.name}: G[${m.globals.join(', ')||'None'}] P[${m.props.map(p=>`${p.object}.${p.property}`).join(', ')||'None'}] S[${m.sheets.map(p=>`${p.object}.${p.property}`).join(', ')||'None'}]`).join(' | ') : 'Mutations: None';
+    callChainEl.appendChild(mutDiv);
+  }
+
+  function renderFunctionsForPath(chains, idx) {
+    if (!chains.length || idx < 0 || idx >= chains.length) {
+      codeViewerEl.classList.add('empty');
+      codeViewerEl.textContent = 'No code.';
+      return;
+    }
+    const pathObj = chains[idx];
+    const methods = Array.from(new Set((pathObj.chain || []).filter(n => functionTable.has(n))));
+    if (!methods.length) {
+      codeViewerEl.classList.add('empty');
+      codeViewerEl.textContent = 'No code.';
+      return;
+    }
+    codeViewerEl.classList.remove('empty');
+    codeViewerEl.innerHTML = '';
+    const pathLabel = document.createElement('div');
+    pathLabel.style.color = '#7ce7ac';
+    pathLabel.style.marginBottom = '6px';
+    pathLabel.textContent = `Path: ${pathObj.chain.join(' -> ')}`;
+    codeViewerEl.appendChild(pathLabel);
+    methods.forEach(m => {
+      const defs = functionTable.get(m)?.defs || [];
+      const d = defs[0];
+      const panel = document.createElement('div');
+      panel.style.border = '1px solid #2c3b68';
+      panel.style.borderRadius = '6px';
+      panel.style.padding = '6px';
+      panel.style.marginBottom = '8px';
+      const header = document.createElement('div');
+      header.style.display = 'flex';
+      header.style.justifyContent = 'space-between';
+      header.style.alignItems = 'center';
+      header.innerHTML = `<strong>${m}</strong> <span style="color:#7182a6;">${d ? d.file : ''}</span>`;
+      panel.appendChild(header);
+      const pre = document.createElement('pre');
+      pre.style.whiteSpace = 'pre-wrap';
+      pre.style.background = '#0f1730';
+      pre.style.padding = '6px';
+      pre.style.borderRadius = '6px';
+      pre.style.border = '1px solid #2c3b68';
+      if (d && d.loc) {
+        const fileObj = fileStore.find(f => f.name === d.file);
+        const block = fileObj ? extractFunctionBlock(fileObj.text, d.loc) : '';
+        pre.textContent = block || '(definition not found)';
+      } else {
+        pre.textContent = '(definition not found)';
+      }
+      panel.appendChild(pre);
+      codeViewerEl.appendChild(panel);
+    });
+  }
+
+  function renderDrilldown(chains, idx) {
+    if (!chains.length) {
+      clientDrillEl.classList.add('empty');
+      clientDrillEl.textContent = 'No client methods.';
+      serverDrillEl.classList.add('empty');
+      serverDrillEl.textContent = 'No server calls.';
+      return;
+    }
+    clientDrillEl.classList.remove('empty');
+    serverDrillEl.classList.remove('empty');
+    clientDrillEl.innerHTML = '';
+    serverDrillEl.innerHTML = '';
+    const pathObj = chains[idx] || chains[0];
+    const chainFns = Array.isArray(pathObj.chain) ? pathObj.chain : [];
+    const clientFns = chainFns.filter(n => functionTable.has(n) && isClientFunction(n));
+    const serverFns = chainFns.filter(n => functionTable.has(n) && isServerFunction(n));
+    const seenClient = new Set();
+    clientFns.forEach(fn => {
+      if (seenClient.has(fn)) return;
+      seenClient.add(fn);
+      const btn = document.createElement('button');
+      btn.textContent = fn;
+      btn.style.background = '#3fc0ff';
+      btn.style.color = '#041026';
+      btn.style.border = '1px solid #2c3b68';
+      btn.style.borderRadius = '6px';
+      btn.style.padding = '4px 8px';
+      btn.style.margin = '4px';
+      btn.addEventListener('click', () => toggleInlineExpand(fn, pathObj));
+      clientDrillEl.appendChild(btn);
+    });
+    const seenServer = new Set();
+    serverFns.forEach(fn => {
+      if (seenServer.has(fn)) return;
+      seenServer.add(fn);
+      const div = document.createElement('div');
+      div.style.marginBottom = '6px';
+      div.textContent = fn;
+      serverDrillEl.appendChild(div);
+    });
+  }
+
+  function isServerFile(fileName) {
+    if (!fileName) return false;
+    const lower = fileName.toLowerCase();
+    return lower.startsWith('gs--') || lower.endsWith('.gs');
+  }
+
+  function isServerFunction(name) {
+    const defs = functionTable.get(name)?.defs || [];
+    return defs.some(d => isServerFile(d.file));
+  }
+
+  function isClientFunction(name) {
+    if (isServerFunction(name)) return false;
+    const defs = functionTable.get(name)?.defs || [];
+    if (!defs.length) return false;
+    return defs.some(d => {
+      const f = (d.file || '').toLowerCase();
+      return f.endsWith('.js.html') || f.startsWith('html--') || f.endsWith('.html');
+    });
+  }
+
+  function normalizeServerName(name) {
+    return (name || '').replace(/^google\.script\.run\.?/, '');
+  }
+
+  function branchAllowedDefaultFalse(info, toggles = branchToggles) {
+    if (!info) return true;
+    if (info.branchId) {
+      const meta = branchMeta[info.branchId];
+      if (meta && meta.ignorePath) return true;
+      const desired = info.branchId in toggles ? !!toggles[info.branchId] : false;
+      const target = 'branchVal' in info ? !!info.branchVal : false;
+      return desired === target;
+    }
+    if (info.branchVal === true) return false;
+    return true;
+  }
+
+  function branchState(id, toggles = branchToggles) {
+    return id in toggles ? !!toggles[id] : false;
+  }
+
+  function buildDrilldownTrees(ctx) {
+    const roots = (ctx && ctx.roots && ctx.roots.length) ? ctx.roots : (startFunctionList && startFunctionList.length ? startFunctionList : []);
+    const localToggles = ctx && ctx.branchDecisions ? ctx.branchDecisions : {};
+    const assumptions = effectiveAssumptionsForDrilldown(ctx);
+    const serverCalls = new Set();
+    const serverBranchIds = new Map();
+    const clientCache = new Map();
+
+    function makeNode(name, serverFlag) {
+      const defs = functionTable.get(name)?.defs || [];
+      const def = defs[0];
+      const file = def ? def.file : '';
+      const rendered = renderExecutedCode(def, serverFlag, localToggles, assumptions);
+      const writes = dedupeObj(
+        (def && def.sheetWrites ? def.sheetWrites : []).map(s => ({ object: s.chain || 'SpreadsheetApp', property: s.method }))
+      );
+      return { name, server: serverFlag, file, code: rendered.text, codeHtml: rendered.html, children: [], writes };
+    }
+
+    function traverseClient(name) {
+      if (!name) return null;
+      if (clientCache.has(name)) return clientCache.get(name);
+      if (!functionTable.has(name)) return null;
+      if (!isClientFunction(name)) return null;
+      const node = makeNode(name, false);
+      clientCache.set(name, node);
+      const defs = functionTable.get(name)?.defs || [];
+      const def = defs[0];
+      if (!def) return node;
+      const callList = def.callsOrder && def.callsOrder.length ? def.callsOrder : Array.from(def.calls || []);
+      callList.forEach(ci => {
+        const info = typeof ci === 'string' ? { name: ci } : (ci || {});
+        if (!info.name) return;
+        if (info.server) {
+          const serverName = normalizeServerName(info.name);
+          serverCalls.add(serverName);
+          if (info.branchId) {
+            if (!serverBranchIds.has(serverName)) serverBranchIds.set(serverName, new Set());
+            serverBranchIds.get(serverName).add(info.branchId);
+          }
+          if (branchAllowedDefaultFalse(info, localToggles)) {
+            const child = traverseClient(serverName);
+            if (child) node.children.push(child);
+          }
+          return;
+        }
+        if (isServerFunction(info.name)) {
+          serverCalls.add(info.name);
+          if (branchAllowedDefaultFalse(info, localToggles)) {
+            const child = traverseClient(info.name);
+            if (child) node.children.push(child);
+          }
+          return;
+        }
+        if (functionTable.has(info.name)) {
+          if (branchAllowedDefaultFalse(info, localToggles)) {
+            const child = traverseClient(info.name);
+            if (child) node.children.push(child);
+          }
+        }
+      });
+      return node;
+    }
+
+    const clientTree = roots.map(traverseClient).filter(Boolean);
+    const serverRoots = new Set(Array.from(serverCalls));
+    roots.forEach(r => { if (isServerFunction(r)) serverRoots.add(r); });
+    const serverTree = buildDrilldownServerTree(Array.from(serverRoots), serverBranchIds, localToggles, assumptions);
+    return { client: clientTree, server: serverTree };
+  }
+
+  function buildDrilldownServerTree(names, branchMap, localToggles, assumptions) {
+    const cache = new Map();
+
+    function makeNode(name) {
+      const defs = functionTable.get(name)?.defs || [];
+      const def = defs[0];
+      const file = def ? def.file : '';
+      const rendered = renderExecutedCode(def, true, localToggles, assumptions);
+      const writes = dedupeObj(
+        (def && def.sheetWrites ? def.sheetWrites : []).map(s => ({ object: s.chain || 'SpreadsheetApp', property: s.method }))
+      );
+      const branchIds = Array.from(branchMap?.get(name) || []);
+      return { name, server: true, file, code: rendered.text, codeHtml: rendered.html, children: [], writes, branchIds };
+    }
+
+    function traverse(name) {
+      if (!name) return null;
+      if (cache.has(name)) return cache.get(name);
+      const node = makeNode(name);
+      cache.set(name, node);
+      const defs = functionTable.get(name)?.defs || [];
+      const def = defs[0];
+      if (!def) return node;
+      const callList = def.callsOrder && def.callsOrder.length ? def.callsOrder : Array.from(def.calls || []);
+      callList.forEach(ci => {
+        const info = typeof ci === 'string' ? { name: ci } : (ci || {});
+        if (!info.name || !branchAllowedDefaultFalse(info, localToggles)) return;
+        if (info.server) {
+          const serverName = normalizeServerName(info.name);
+          const child = traverse(serverName);
+          if (child) node.children.push(child);
+          return;
+        }
+        if (isServerFunction(info.name)) {
+          const child = traverse(info.name);
+          if (child) node.children.push(child);
+        }
+      });
+      return node;
+    }
+
+    return (names || []).map(traverse).filter(Boolean);
+  }
+
+  function renderNodeList(list, container, autoOpenFirst, ctx) {
+    list.forEach((node, idx) => renderNode(node, container, 0, ctx, autoOpenFirst && idx === 0));
+  }
+
+  function decisionsKey(decisions) {
+    const entries = Object.entries(decisions || {}).sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+    return entries.map(([k, v]) => `${k}:${v ? '1' : '0'}`).join('|');
+  }
+
+  function renderDrilldownPathExplorer(ctx) {
+    if (!drilldownPathListEl) return;
+    const roots = (ctx && ctx.roots && ctx.roots.length) ? ctx.roots : [];
+    if (!roots.length) {
+      drilldownPathListEl.classList.add('empty');
+      drilldownPathListEl.textContent = 'No drilldown paths.';
+      return;
+    }
+    const maxVisitsPerFunction = Number.isFinite(+maxDepthPerFnEl?.value) ? +maxDepthPerFnEl.value : 4;
+    const maxPaths = Number.isFinite(+maxPathsEl?.value) ? +maxPathsEl.value : 5000;
+    const assumptions = effectiveAssumptionsForDrilldown(ctx);
+    const paths = buildCallChains(roots, { assumptions, maxVisitsPerFunction, maxPaths });
+    if (!paths.length) {
+      drilldownPathListEl.classList.add('empty');
+      drilldownPathListEl.textContent = 'No drilldown paths.';
+      return;
+    }
+    drilldownPathListEl.classList.remove('empty');
+    drilldownPathListEl.innerHTML = '';
+    const currentKey = decisionsKey(ctx.branchDecisions);
+    const keys = new Set(paths.map(p => decisionsKey(p.decisions)));
+    if (!keys.has(currentKey)) {
+      ctx.branchDecisions = cloneObj(paths[0].decisions);
+    }
+    const activeKey = decisionsKey(ctx.branchDecisions);
+    paths.forEach((p, idx) => {
+      const wrap = document.createElement('div');
+      wrap.style.marginBottom = '8px';
+      wrap.style.border = '1px solid #2c3b68';
+      wrap.style.borderRadius = '6px';
+      wrap.style.padding = '6px';
+      wrap.style.cursor = 'pointer';
+      const pKey = decisionsKey(p.decisions);
+      wrap.style.background = (pKey === activeKey) ? '#0f1730' : 'transparent';
+      wrap.addEventListener('click', () => {
+        ctx.branchDecisions = cloneObj(p.decisions);
+        ctx.expanded = {};
+        renderOrderedDrilldown();
+      });
+      const label = document.createElement('div');
+      label.style.color = '#7ce7ac';
+      const desc = Object.entries(p.decisions || {}).map(([id, val]) => {
+        const meta = branchMeta[id] || {};
+        const where = meta.file ? `${meta.file}${meta.line ? ':' + meta.line : ''}` : id;
+        return `${where} => ${val ? 'true' : 'false'}`;
+      }).join(' | ');
+      label.textContent = `Path ${idx + 1}: ${desc || 'no branch decisions'}`;
+      wrap.appendChild(label);
+      const pre = document.createElement('pre');
+      pre.style.whiteSpace = 'pre-wrap';
+      pre.style.lineHeight = '1.3';
+      pre.style.margin = '6px 0 0 0';
+      const chain = Array.isArray(p.chain) ? p.chain : [];
+      const foldKey = `d:${idx}:${decisionsKey(p.decisions)}`;
+      const expanded = !!drilldownPathFoldExpanded[foldKey];
+      const foldedParts = [];
+      for (let i = 0; i < chain.length; i++) {
+        const cur = chain[i];
+        let j = i + 1;
+        while (j < chain.length && chain[j] === cur) j++;
+        const count = j - i;
+        const label = isServerFunction(cur) ? `[SERVER] ${cur}` : cur;
+        foldedParts.push(count > 1 ? `${label} ×${count}` : label);
+        i = j - 1;
+      }
+      const rawParts = chain.map(n => (isServerFunction(n) ? `[SERVER] ${n}` : n));
+      pre.textContent = (expanded ? rawParts : foldedParts).join('\n');
+      wrap.appendChild(pre);
+      if (foldedParts.join('\n') !== rawParts.join('\n')) {
+        const expBtn = document.createElement('button');
+        expBtn.textContent = expanded ? 'Fold' : 'Expand';
+        expBtn.style.marginTop = '6px';
+        expBtn.style.padding = '4px 8px';
+        expBtn.style.borderRadius = '8px';
+        expBtn.style.border = '1px solid #2c3b68';
+        expBtn.style.background = '#182344';
+        expBtn.style.color = '#8fa1c2';
+        expBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          drilldownPathFoldExpanded[foldKey] = !expanded;
+          renderOrderedDrilldown();
+        });
+        wrap.appendChild(expBtn);
+      }
+      drilldownPathListEl.appendChild(wrap);
+    });
+  }
+
+  function renderNode(node, container, depth, ctx, forceOpen = false) {
+    if (!node) return;
+    const localCtx = ctx || ensureDrilldownContext();
+    const localExpanded = localCtx.expanded || (localCtx.expanded = {});
+    const localToggles = localCtx.branchDecisions || (localCtx.branchDecisions = {});
+    const key = `${node.server ? 'server' : 'client'}:${node.name}:${depth}`;
+    if (!(key in localExpanded)) localExpanded[key] = !!forceOpen;
+    const wrapper = document.createElement('div');
+    wrapper.style.marginLeft = depth ? '10px' : '0px';
+    wrapper.style.marginBottom = '8px';
+    const btn = document.createElement('button');
+    btn.textContent = node.name;
+    btn.style.background = '#3fc0ff';
+    btn.style.color = '#041026';
+    btn.style.border = '1px solid #2c3b68';
+    btn.style.borderRadius = '6px';
+    btn.style.padding = '4px 8px';
+    btn.style.margin = '4px 0';
+    btn.addEventListener('click', () => {
+      localExpanded[key] = !localExpanded[key];
+      renderOrderedDrilldown();
+    });
+    wrapper.appendChild(btn);
+
+    if (localExpanded[key]) {
+      const code = document.createElement('pre');
+      code.style.whiteSpace = 'pre-wrap';
+      code.style.background = '#0f1730';
+      code.style.padding = '6px';
+      code.style.borderRadius = '6px';
+      code.style.border = '1px solid #2c3b68';
+      code.innerHTML = node.codeHtml || escapeHtml(node.code || '(definition not found)');
+      wrapper.appendChild(code);
+      if (node.server && node.branchIds && node.branchIds.length) {
+        const toggleWrap = document.createElement('div');
+        toggleWrap.style.margin = '6px 0';
+        node.branchIds.forEach(id => {
+          const btn = document.createElement('button');
+          btn.textContent = `${branchState(id, localToggles) ? 'Success' : 'Failure'} (${id})`;
+          btn.style.marginRight = '6px';
+          btn.style.border = '1px solid #2c3b68';
+          btn.style.borderRadius = '6px';
+          btn.style.padding = '4px 8px';
+          btn.style.background = branchState(id, localToggles) ? '#4ade80' : '#f87171';
+          btn.style.color = '#041026';
+          btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            localToggles[id] = !branchState(id, localToggles);
+            renderOrderedDrilldown();
+          });
+          toggleWrap.appendChild(btn);
+        });
+        wrapper.appendChild(toggleWrap);
+      }
+      code.querySelectorAll('.branch-toggle').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const id = btn.getAttribute('data-branch');
+          if (!id) return;
+          localToggles[id] = !branchState(id, localToggles);
+          renderOrderedDrilldown();
+        });
+      });
+      if (node.server && node.writes && node.writes.length) {
+        const writesEl = document.createElement('div');
+        writesEl.style.color = '#8fa1c2';
+        writesEl.style.fontSize = '12px';
+        writesEl.style.marginTop = '6px';
+        writesEl.textContent = 'Writes: ' + node.writes.map(w => `${w.object}.${w.property}`).join(', ');
+        wrapper.appendChild(writesEl);
+      }
+      if (node.children && node.children.length) {
+        const childWrap = document.createElement('div');
+        childWrap.style.marginLeft = '12px';
+        node.children.forEach(child => renderNode(child, childWrap, depth + 1, localCtx, false));
+        wrapper.appendChild(childWrap);
+      }
+    }
+    container.appendChild(wrapper);
+  }
+
+	  function renderOrderedDrilldown() {
+	    const ctx = ensureDrilldownContext();
+	    ensureBundleUpToDateUI();
+	    renderDrilldownPathExplorer(ctx);
+	    const orderedTrees = buildDrilldownTrees(ctx);
+	    const clientTree = orderedTrees.client;
+	    const serverTree = orderedTrees.server;
+
+    clientOrderedDrillEl.innerHTML = '';
+    serverOrderedDrillEl.innerHTML = '';
+
+    if (!clientTree.length) {
+      clientOrderedDrillEl.classList.add('empty');
+      clientOrderedDrillEl.textContent = 'No client methods.';
+    } else {
+      clientOrderedDrillEl.classList.remove('empty');
+      renderNodeList(clientTree, clientOrderedDrillEl, true, ctx);
+    }
+
+    if (!serverTree.length) {
+      serverOrderedDrillEl.classList.add('empty');
+      serverOrderedDrillEl.textContent = 'No server calls.';
+    } else {
+      serverOrderedDrillEl.classList.remove('empty');
+      renderNodeList(serverTree, serverOrderedDrillEl, false, ctx);
+    }
+  }
+
+  // Drilldown assumptions UI has been replaced by the local execution bundle contract UI.
+
+  function toggleInlineExpand(fn, pathObj) {
+    const defs = functionTable.get(fn)?.defs || [];
+    const d = defs[0];
+    if (!d || !d.loc) return;
+    const fileObj = fileStore.find(f => f.name === d.file);
+    if (!fileObj) return;
+    const block = extractFunctionBlock(fileObj.text, d.loc) || '';
+    const markerStart = `->{start : ${fn}()`;
+    const markerEnd = `end:}`;
+    // simple inline rendering in the code viewer header
+    const expanded = `${markerStart}\n${block}\n${markerEnd}`;
+    // append to code viewer for quick view
+    const inline = document.createElement('pre');
+    inline.style.whiteSpace = 'pre-wrap';
+    inline.style.background = '#0f1730';
+    inline.style.padding = '6px';
+    inline.style.borderRadius = '6px';
+    inline.style.border = '1px solid #2c3b68';
+    inline.textContent = expanded;
+    codeViewerEl.appendChild(inline);
+    codeViewerEl.scrollIntoView({ behavior: 'smooth' });
+  }
+
+  function mutationsSummaryForPath(pathObj) {
+    const funcs = gatherFuncsInChains([pathObj]);
+    const mutInfos = collectMutationsForFuncs(funcs);
+    return mutInfos;
+  }
+
+  function classifyPathSideEffects(pathObj) {
+    const funcs = gatherFuncsInChains([pathObj]);
+    let clientMut = false;
+    let serverMut = false;
+    funcs.forEach(fn => {
+      const defs = functionTable.get(fn)?.defs || [];
+      defs.forEach(d => {
+        const isServer = isServerFile(d.file);
+        const globals = (d.assignments && d.assignments.globals) ? d.assignments.globals.length : 0;
+        const props = (d.assignments && d.assignments.props) ? d.assignments.props.length : 0;
+        const sheets = d.sheetWrites ? d.sheetWrites.length : 0;
+        if (sheets) serverMut = true;
+        if (isServer && (globals || props)) serverMut = true;
+        if (!isServer && (globals || props)) clientMut = true;
+      });
+    });
+    if (!clientMut && !serverMut) return ['No state change'];
+    if (clientMut && serverMut) return ['Client state change', 'Server/persistent change'];
+    if (clientMut) return ['Client state change'];
+    return ['Server/persistent change'];
+  }
+
+  function gatherFuncsInChains(chains) {
+    const set = new Set();
+    chains.forEach(pathObj => {
+      const arr = Array.isArray(pathObj.chain) ? pathObj.chain : Array.isArray(pathObj) ? pathObj : [];
+      arr.forEach(fn => {
+        if (functionTable.has(fn)) set.add(fn);
+      });
+    });
+    return set;
+  }
+
+  function gatherUsedBranches(chains) {
+    const funcs = gatherFuncsInChains(chains);
+    const used = new Set();
+    funcs.forEach(fn => {
+      const defs = functionTable.get(fn)?.defs || [];
+      defs.forEach(d => (d.branchIds || []).forEach(id => used.add(id)));
+    });
+    return used;
+  }
+
+  function collectMutationsForFuncs(funcs) {
+    const output = [];
+    funcs.forEach(fn => {
+      const defs = functionTable.get(fn)?.defs || [];
+      defs.forEach(d => {
+        output.push({
+          name: d.name,
+          file: d.file,
+          globals: dedupe(d.assignments.globals),
+          props: dedupeObj(d.assignments.props),
+          sheets: dedupeObj(
+            (d.sheetWrites || []).map(s => ({ object: s.chain || 'SpreadsheetApp', property: s.method }))
+          )
+        });
+      });
+    });
+    return output;
+  }
+
+  function dedupe(arr) { return Array.from(new Set(arr)); }
+  function dedupeObj(arr) {
+    const seen = new Set(); const out = [];
+    arr.forEach(o => {
+      const key = o.object + '.' + o.property;
+      if (!seen.has(key)) { seen.add(key); out.push(o); }
+    });
+    return out;
+  }
+
+  function refreshAfterToggle() {
+    recomputeGlobalPaths();
+  }
+
+  function renderExecutedCode(def, isServerView = false, toggles = branchToggles, assumptions = null) {
+    if (!def || !def.loc) return { text: '', html: '' };
+    const fileObj = fileStore.find(f => f.name === def.file);
+    if (!fileObj) return { text: '', html: '' };
+    const lines = fileObj.text.split(/\r?\n/);
+    const startLine = def.loc.start.line;
+    const endLine = def.loc.end.line;
+    const slice = lines.slice(startLine - 1, endLine);
+    const skipRanges = []; // {start:{line,column}, end:{line,column}}
+    const ifHighlightsByLine = {}; // absLine -> [{startCol,endCol}]
+
+    function collectConditions(node) {
+      if (!node || typeof node !== 'object') return;
+      if (Array.isArray(node)) {
+        node.forEach(n => collectConditions(n));
+        return;
+      }
+      // Nested function bodies are definitions, not executed as part of this function's flow.
+      if (node.type === 'FunctionDeclaration' || node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression') {
+        return;
+      }
+      if (node.type === 'IfStatement') {
+        const ifLine = node.loc && node.loc.start ? node.loc.start.line : null;
+        const ifCol = node.loc && node.loc.start ? node.loc.start.column : null;
+
+        // Rule 1+2: always highlight only the structural "if ( CONDITION )" portion.
+        if (ifLine != null && ifCol != null && node.test && node.test.loc && typeof node.test.end === 'number') {
+          const testEndLoc = node.test.loc && node.test.loc.end ? node.test.loc.end : null;
+          const closeParen = findClosingParenAfterTest(fileObj.text, node.test.end, testEndLoc);
+          const endLineAbs = closeParen ? closeParen.line : (testEndLoc ? testEndLoc.line : ifLine);
+          const endColAbs = closeParen ? closeParen.col : (testEndLoc ? testEndLoc.column : ifCol);
+          addRangeByLine(ifHighlightsByLine, lines, { line: ifLine, col: ifCol }, { line: endLineAbs, col: endColAbs });
+        }
+
+        // Execution dimming applies to the body statement only, never the condition.
+        const ifId = `${def.file || ''}:${def.name}:${typeof node.start === 'number' ? node.start : (ifLine ?? '?')}`;
+        const state = branchState(ifId, toggles);
+        if (state === false && node.consequent && node.consequent.loc) {
+          skipRanges.push({ start: node.consequent.loc.start, end: node.consequent.loc.end });
+        } else if (state === true && node.alternate && node.alternate.loc) {
+          skipRanges.push({ start: node.alternate.loc.start, end: node.alternate.loc.end });
+        }
+        collectConditions(node.alternate);
+        collectConditions(node.consequent);
+        return;
+      }
+      if (node.type === 'TryStatement') {
+        collectConditions(node.block);
+        collectConditions(node.handler && node.handler.body);
+        collectConditions(node.finalizer);
+      }
+      if (node.body) collectConditions(node.body);
+      if (node.test) collectConditions(node.test);
+    }
+    collectConditions(def.node && def.node.body ? def.node.body.body || def.node.body : def.node);
+
+    const dimByLine = buildDimIntervalsByLine(skipRanges, lines);
+
+    function addRangeByLine(map, allLines, start, end) {
+      if (!start || !end) return;
+      const startLineAbs = start.line;
+      const endLineAbs = end.line;
+      if (!startLineAbs || !endLineAbs) return;
+      for (let line = startLineAbs; line <= endLineAbs; line++) {
+        const raw = allLines[line - 1] || '';
+        const len = raw.length;
+        let startCol = 0;
+        let endCol = len;
+        if (line === startLineAbs) startCol = Math.max(0, start.col || 0);
+        if (line === endLineAbs) endCol = Math.max(0, end.col || 0);
+        if (endLineAbs === startLineAbs) endCol = Math.max(startCol, endCol);
+        const key = String(line);
+        if (!Array.isArray(map[key])) map[key] = [];
+        map[key].push({ startCol, endCol });
+      }
+    }
+
+    function findClosingParenAfterTest(fullText, fromOffset, testEndLoc) {
+      if (typeof fromOffset !== 'number') return null;
+      let line = testEndLoc && typeof testEndLoc.line === 'number' ? testEndLoc.line : null;
+      let col = testEndLoc && typeof testEndLoc.column === 'number' ? testEndLoc.column : null;
+      if (line == null || col == null) {
+        const head = fullText.slice(0, fromOffset);
+        const parts = head.split(/\r?\n/);
+        line = parts.length;
+        col = parts[parts.length - 1].length;
+      }
+      for (let i = fromOffset; i < fullText.length; i++) {
+        const ch = fullText[i];
+        if (ch === ')') return { offset: i + 1, line, col: col + 1 };
+        if (ch === '\n') { line += 1; col = 0; continue; }
+        col += 1;
+      }
+      return null;
+    }
+
+    function buildDimIntervalsByLine(ranges, allLines) {
+      const map = {};
+      (ranges || []).forEach(r => {
+        const s = r && r.start;
+        const e = r && r.end;
+        if (!s || !e || !s.line || !e.line) return;
+        for (let line = s.line; line <= e.line; line++) {
+          const raw = allLines[line - 1] || '';
+          const len = raw.length;
+          let startCol = 0;
+          let endCol = len;
+          if (line === s.line) startCol = Math.max(0, s.column || 0);
+          if (line === e.line) endCol = Math.max(0, e.column || 0);
+          if (e.line === s.line) endCol = Math.max(startCol, endCol);
+          const key = String(line);
+          if (!Array.isArray(map[key])) map[key] = [];
+          map[key].push({ startCol, endCol });
+        }
+      });
+      return map;
+    }
+
+    function clampIntervals(intervals, len) {
+      if (!Array.isArray(intervals) || len <= 0) return [];
+      const out = intervals
+        .map(r => ({ start: Math.max(0, Math.min(len, r.startCol ?? r.start ?? 0)), end: Math.max(0, Math.min(len, r.endCol ?? r.end ?? 0)) }))
+        .filter(r => r.end > r.start)
+        .sort((a, b) => a.start - b.start);
+      const merged = [];
+      out.forEach(r => {
+        const last = merged[merged.length - 1];
+        if (!last || r.start > last.end) merged.push(r);
+        else last.end = Math.max(last.end, r.end);
+      });
+      return merged;
+    }
+
+    function covered(intervals, start, end) {
+      return intervals.some(r => start >= r.start && end <= r.end);
+    }
+
+    function renderLineWithIntervals(rawVisible, highlightIntervals, dimIntervals) {
+      const len = rawVisible.length;
+      const hi = clampIntervals(highlightIntervals, len);
+      const di = clampIntervals(dimIntervals, len);
+      if (!hi.length && !di.length) return escapeHtml(rawVisible);
+      const points = new Set([0, len]);
+      hi.forEach(r => { points.add(r.start); points.add(r.end); });
+      di.forEach(r => { points.add(r.start); points.add(r.end); });
+      const sorted = Array.from(points).sort((a, b) => a - b);
+      const parts = [];
+      for (let i = 0; i < sorted.length - 1; i++) {
+        const a = sorted[i];
+        const b = sorted[i + 1];
+        if (b <= a) continue;
+        const seg = rawVisible.slice(a, b);
+        const segEsc = escapeHtml(seg);
+        const inHi = covered(hi, a, b);
+        const inDim = covered(di, a, b);
+        let html = segEsc;
+        if (inHi) html = `<span class="if-cond">${html}</span>`;
+        if (inDim) html = `<span class="skipped">${html}</span>`;
+        parts.push(html);
+      }
+      return parts.join('');
+    }
+
+    // Build output showing all lines; reachability is dimmed and IF conditions are always red.
+    const output = [];
+    const outputHtml = [];
+    let halted = false;
+    slice.forEach((line, idx) => {
+      const absLine = startLine + idx;
+      const dimWholeLine = halted;
+      const branchIds = branchIdFor(def, absLine) || [];
+      const toggle = (branchIds || []).map(branchId => {
+        const branchStateVal = branchId ? branchState(branchId, toggles) : null;
+        const isGsRunToggle = branchId && String(branchId).startsWith('gsrun:');
+        const showToggle = !!branchId && (isServerView || !isGsRunToggle);
+        if (!showToggle) return '';
+        return `<button class="branch-toggle" data-branch="${branchId}" style="margin-right:6px;border:1px solid #2c3b68;border-radius:6px;padding:2px 6px;background:${branchStateVal ? '#4ade80' : '#f87171'};color:#041026;cursor:pointer;vertical-align:middle;">${branchStateVal ? 'T' : 'F'}</button>`;
+      }).filter(Boolean).join('');
+
+      // Preserve leading whitespace to keep toggles visually aligned
+      const leadingSpaces = line.match(/^\s*/)?.[0] || '';
+      const visibleRaw = line.replace(/^\s*/, '');
+      const spacer = leadingSpaces ? `<span style="white-space:pre;">${escapeHtml(leadingSpaces)}</span>` : '';
+      const highlightAbs = ifHighlightsByLine[String(absLine)] || [];
+      const dimAbs = dimByLine[String(absLine)] || [];
+      const leadingLen = leadingSpaces.length;
+      const highlight = highlightAbs.map(r => ({ startCol: Math.max(0, (r.startCol ?? 0) - leadingLen), endCol: Math.max(0, (r.endCol ?? 0) - leadingLen) }));
+      const dim = dimWholeLine ? [{ startCol: 0, endCol: visibleRaw.length }] : dimAbs.map(r => ({ startCol: Math.max(0, (r.startCol ?? 0) - leadingLen), endCol: Math.max(0, (r.endCol ?? 0) - leadingLen) }));
+      const rendered = renderLineWithIntervals(visibleRaw, highlight, dim);
+
+      output.push(line);
+      outputHtml.push(`${spacer}${toggle}<span>${rendered}</span>`);
+      if (!halted) {
+        const trimmed = line.trim();
+        if (trimmed.startsWith('return') || trimmed === 'return;') {
+          halted = true;
+        }
+      }
+    });
+    return { text: output.join('\n'), html: outputHtml.join('\n') };
+  }
+
+  function branchIdFor(def, absLine) {
+    if (!def) return null;
+    const key = `${def.file || ''}:${def.name}:${absLine}`;
+    const direct = branchLineLookup[key];
+    if (Array.isArray(direct) && direct.length) {
+      return direct
+        .slice()
+        .sort((a, b) => (branchMeta[a]?.col ?? 0) - (branchMeta[b]?.col ?? 0));
+    }
+    const found = Object.entries(branchMeta || {})
+      .filter(([, meta]) => meta && meta.file === def.file && meta.funcName === def.name && meta.line === absLine)
+      .map(([id]) => id)
+      .sort((a, b) => (branchMeta[a]?.col ?? 0) - (branchMeta[b]?.col ?? 0));
+    return found.length ? found : null;
+  }
+
+  function renderMutationsForPath(chains, idx) {
+    if (!chains.length) {
+      callChainEl.classList.add('empty');
+      callChainEl.textContent = 'No data.';
+      return [];
+    }
+    const pathObj = chains[idx] || chains[0];
+    const funcs = gatherFuncsInChains([pathObj]);
+    const mutInfos = collectMutationsForFuncs(funcs);
+    return mutInfos;
+  }
+
+  function gatherFuncsInChains(chains) {
+    const set = new Set();
+    (chains || []).forEach(item => {
+      const arr = Array.isArray(item?.chain) ? item.chain : Array.isArray(item) ? item : [];
+      arr.forEach(fn => {
+        if (functionTable.has(fn)) set.add(fn);
+      });
+    });
+    return set;
+  }
+
+  function gatherUsedBranches(chains) {
+    const funcs = gatherFuncsInChains(chains);
+    const used = new Set();
+    funcs.forEach(fn => {
+      const defs = functionTable.get(fn)?.defs || [];
+      defs.forEach(d => (d.branchIds || []).forEach(id => used.add(id)));
+    });
+    return used;
+  }
+
+  function renderBranchToggles(branchSet) {
+    const setArr = branchSet ? Array.from(branchSet) : [];
+    const list = branchRegistry.filter(b => !setArr.length || setArr.includes(b.id));
+    if (!list.length) {
+      branchTogglesEl.classList.add('empty');
+      branchTogglesEl.textContent = 'No conditionals found.';
+      return;
+    }
+    branchTogglesEl.classList.remove('empty');
+    branchTogglesEl.innerHTML = '';
+    const byFunc = new Map();
+    list.forEach(b => {
+      if (!byFunc.has(b.funcName)) byFunc.set(b.funcName, []);
+      byFunc.get(b.funcName).push(b);
+    });
+    byFunc.forEach((items, func) => {
+      const details = document.createElement('details');
+      details.open = true;
+      const summary = document.createElement('summary');
+      summary.textContent = func || 'unknown';
+      summary.style.cursor = 'pointer';
+      summary.style.color = '#e8edff';
+      details.appendChild(summary);
+      items.forEach(b => {
+        const id = `branch-${b.id}`;
+        const wrapper = document.createElement('div');
+        wrapper.style.marginBottom = '6px';
+        const input = document.createElement('input');
+        input.type = 'checkbox';
+        input.id = id;
+        input.checked = !!branchToggles[b.id];
+        input.addEventListener('change', () => {
+          branchToggles[b.id] = input.checked;
+          analyze();
+        });
+        const label = document.createElement('label');
+        label.htmlFor = id;
+        label.style.marginLeft = '6px';
+        label.textContent = `${b.label} (true=${input.checked})`;
+        wrapper.appendChild(input);
+        wrapper.appendChild(label);
+        details.appendChild(wrapper);
+      });
+      branchTogglesEl.appendChild(details);
+    });
+  }
+
+  function renderSnippets() {
+    if (!codeSnippets.length) {
+      codeSnippetsEl.classList.add('empty');
+      codeSnippetsEl.textContent = 'No data.';
+      return;
+    }
+    codeSnippetsEl.classList.remove('empty');
+    codeSnippetsEl.innerHTML = '';
+    codeSnippets.forEach(s => {
+      const div = document.createElement('div');
+      div.style.marginBottom = '10px';
+      div.innerHTML = `<strong>${s.label}</strong><br><span style="color:#7182a6;">${s.file}${s.line ? ':' + s.line : ''}</span><pre style="white-space:pre-wrap;background:#0f1730;padding:6px;border-radius:6px;">${escapeHtml(s.code)}</pre>`;
+      codeSnippetsEl.appendChild(div);
+    });
+  }
+
+  function focusSnippet(name) {
+    if (!name) return;
+    const snip = codeSnippets.find(s => s.label.includes(name)) || codeSnippets.find(s => s.label.startsWith(`Function ${name}`));
+    if (!snip) return;
+    codeSnippetsEl.classList.remove('empty');
+    codeSnippetsEl.innerHTML = '';
+    const div = document.createElement('div');
+    div.innerHTML = `<strong>${snip.label}</strong><br><span style="color:#7182a6;">${snip.file}${snip.line ? ':' + snip.line : ''}</span><pre style="white-space:pre-wrap;background:#0f1730;padding:6px;border-radius:6px;">${escapeHtml(snip.code)}</pre>`;
+    codeSnippetsEl.appendChild(div);
+  }
+
+  // Minimal public API for local execution bundle generation.
+  if (typeof window !== 'undefined') {
+    window.__dynamicAnalyzer = Object.assign(window.__dynamicAnalyzer || {}, {
+      generateLocalBundleForSelectedPath,
+    });
+  }
+})();
+</script>
+</body>
+</html>
